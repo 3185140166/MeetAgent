@@ -8,6 +8,12 @@ venv/
 # 数据库文件
 data/*.db
 
+# 向量索引（本地生成，不提交）
+data/chroma/
+
+# 本地模型文件（体积大，不提交）
+models/
+
 # 未使用的模型文件（Phase 1 用 jieba，不需要此 tokenizer）
 data/dfm2.0-v3.5-tokenizer-model/
 

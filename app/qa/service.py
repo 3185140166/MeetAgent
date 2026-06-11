@@ -1,9 +1,21 @@
 # -*- coding: utf-8 -*-
 from typing import Optional
-from app.search.bm25 import search
 from app.llm.client import chat
 from app.qa.prompts import build_messages
 from app.config import TOP_K
+
+
+def _do_search(question: str, user_id: Optional[str], top_k: int):
+    """优先使用混合检索；向量库为空时自动降级到 BM25。"""
+    try:
+        from app.embed.vector_store import count
+        if count() > 0:
+            from app.search.hybrid import search as hybrid_search
+            return hybrid_search(question, user_id=user_id, top_k=top_k)
+    except Exception:
+        pass
+    from app.search.bm25 import search as bm25_search
+    return bm25_search(question, user_id=user_id, top_k=top_k)
 
 
 async def ask(
@@ -11,7 +23,7 @@ async def ask(
     user_id: Optional[str] = None,
     top_k: int = TOP_K,
 ) -> dict:
-    chunks = search(question, user_id=user_id, top_k=top_k)
+    chunks = _do_search(question, user_id, top_k)
     if not chunks:
         return {
             "answer": "当前会议资料中没有找到相关内容。",
@@ -25,10 +37,10 @@ async def ask(
         {
             "chunk_id": c["chunk_id"],
             "note_id": c["note_id"],
-            "title": c["title"],
-            "create_time": c["create_time"],
-            "speaker": c["speaker"],
-            "chunk_index": c["chunk_index"],
+            "title": c.get("title", ""),
+            "create_time": c.get("create_time", ""),
+            "speaker": c.get("speaker", ""),
+            "chunk_index": c.get("chunk_index", -1),
             "text": c["text"],
         }
         for c in chunks

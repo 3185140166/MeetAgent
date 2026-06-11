@@ -64,7 +64,26 @@ python scripts/extract_user.py --user-id <user_id> --limit 25
 python scripts/extract_user.py --user-id <user_id> --dry-run
 ```
 
-### 5. 问答
+### 5. 构建向量索引（可选，启用混合检索）
+
+使用本地 `BAAI/bge-small-zh-v1.5` 模型（约 90MB，CPU 可运行）对所有 chunks 做向量编码，写入 ChromaDB：
+
+```bash
+# 对指定用户构建向量索引
+python scripts/build_index.py --user-id <user_id>
+
+# 全量构建（所有用户）
+python scripts/build_index.py
+
+# 自定义批大小（默认 128，内存紧张可调小）
+python scripts/build_index.py --user-id <user_id> --batch-size 64
+```
+
+索引保存在 `data/chroma/`，构建完成后问答自动切换为**混合检索模式**（BM25 + 向量 + RRF 融合）。
+
+> 首次运行会自动下载 embedding 模型到 `models/` 目录（需要联网），之后离线可用。
+
+### 6. 问答
 
 **CLI：**
 
@@ -143,6 +162,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 | `scripts/stats.py` | 查看所有用户的会议数量和抽取进度 |
 | `scripts/extract_user.py` | 对指定用户做结构化记忆抽取 |
 | `scripts/show_memory.py` | 查看指定用户或会议的结构化记忆内容 |
+| `scripts/build_index.py` | 构建向量索引（BM25 + 向量混合检索前置步骤） |
 
 ```bash
 # 查看某用户所有会议摘要
@@ -171,7 +191,12 @@ MeetAgent/
     ingest/
       import_meetings.py   # 会议数据导入（幂等）
       chunker.py           # 文本切分 + jieba 分词
-    search/bm25.py         # BM25 检索（支持 user_id 过滤）
+    search/
+      bm25.py              # BM25 检索（支持 user_id 过滤）
+      hybrid.py            # BM25 + 向量 RRF 混合检索
+    embed/
+      encoder.py           # 向量编码（本地 bge-small-zh-v1.5 / DashScope API）
+      vector_store.py      # ChromaDB 向量库封装
     extract/
       extractor.py         # map-reduce 结构化抽取
       prompts.py           # 抽取 prompt 模板
@@ -183,8 +208,10 @@ MeetAgent/
   scripts/                 # 运维和调试工具脚本
   data/
     meetagent.db           # SQLite 数据库（自动生成）
+    chroma/                # ChromaDB 向量索引（自动生成，不提交 git）
     stopwords.txt          # jieba 停用词
     course_keywords.txt    # 领域关键词
+  models/                  # 本地 embedding 模型缓存（自动下载，不提交 git）
   docs/
     meeting_agent_plan.md  # 项目设计文档
 
@@ -195,6 +222,7 @@ MeetAgent/
 ## 开发阶段
 
 - [x] 阶段一：本地会议问答（BM25 + 大模型）
-- [ ] 阶段二：结构化会议记忆（摘要、待办、决策抽取）
-- [ ] 阶段三：混合检索（BM25 + 向量检索 + rerank）
+- [x] 阶段二：结构化会议记忆（摘要、待办、决策、风险、实体 map-reduce 抽取）
+- [x] 阶段三：混合检索（BM25 + 向量检索 + RRF 融合）
 - [ ] 阶段四：工具调用与 Agent 化
+
