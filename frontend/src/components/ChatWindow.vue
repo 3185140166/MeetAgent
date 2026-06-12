@@ -63,7 +63,7 @@
 </template>
 
 <script setup>
-import { ref, watch, nextTick } from 'vue'
+import { ref, reactive, watch, nextTick } from 'vue'
 import { streamChat } from '../api/agent.js'
 
 const props = defineProps({
@@ -121,14 +121,14 @@ async function send() {
   input.value = ''
   loading.value = true
 
-  // 助手消息占位
-  const assistantMsg = {
+  // 助手消息占位：用 reactive() 确保后续的属性修改能被 Vue 追踪
+  const assistantMsg = reactive({
     id: Date.now() + 1,
     role: 'assistant',
     content: '',
     toolCalls: [],
     streaming: true,
-  }
+  })
   messages.value.push(assistantMsg)
   streamingMsg.value = assistantMsg
 
