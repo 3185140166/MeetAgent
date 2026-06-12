@@ -5,9 +5,14 @@ from pydantic import BaseModel
 
 from app.qa.service import ask
 from app.agent.loop import run_agent
-from app.storage.db import get_connection
+from app.storage.db import get_connection, init_db
 
 app = FastAPI(title="MeetAgent", description="会议智能问答系统")
+
+
+@app.on_event("startup")
+def startup():
+    init_db()
 
 
 # ---------- 请求 / 响应模型 ----------
@@ -62,12 +67,21 @@ async def agent_qa(req: AgentRequest):
     result = await run_agent(
         req.question, user_id=req.user_id, history=history, max_turns=req.max_turns
     )
-    sess.update(session_id, result["history"])
+    sess.append_turn(session_id, req.question, result["answer"], result["tool_calls_log"])
     return {
         "answer": result["answer"],
         "tool_calls_log": result["tool_calls_log"],
         "session_id": session_id,
     }
+
+
+@app.get("/agent/session/{session_id}")
+def get_session(session_id: str):
+    from app.agent import session as sess
+    messages = sess.get_history(session_id)
+    if not messages:
+        raise HTTPException(status_code=404, detail="session 不存在或已过期")
+    return {"session_id": session_id, "messages": messages}
 
 
 @app.delete("/agent/session/{session_id}")

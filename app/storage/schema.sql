@@ -83,3 +83,24 @@ CREATE INDEX IF NOT EXISTS idx_decisions_note ON decisions(note_id);
 CREATE INDEX IF NOT EXISTS idx_risks_note ON risks(note_id);
 CREATE INDEX IF NOT EXISTS idx_entities_note ON entities(note_id);
 CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(entity_type, name);
+
+-- ========== 第五阶段：对话持久化 ==========
+
+CREATE TABLE IF NOT EXISTS chat_sessions (
+  session_id TEXT PRIMARY KEY,
+  user_id    TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  role       TEXT NOT NULL,   -- user / assistant
+  content    TEXT NOT NULL,
+  tool_calls TEXT,            -- JSON 数组，仅 assistant 消息有值
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(session_id) REFERENCES chat_sessions(session_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
