@@ -95,13 +95,29 @@ python -m app.qa.ask "爆品战略主要讲了什么？"
 python -m app.qa.ask "有哪些待办事项？" <user_id>
 ```
 
-**模式 B：Agent 问答（Phase 4）**
+**模式 B：Agent 单次问答（Phase 4）**
 LLM 自主决定调用哪些工具（结构化查询 / 原文检索），支持更复杂的问题。
 
 ```bash
 python -m app.agent.ask "我有哪些待办事项？" <user_id>
 python -m app.agent.ask "最近的会议有哪些主要风险？" <user_id>
 python -m app.agent.ask "上周做了哪些决策？" <user_id>
+```
+
+**模式 C：Agent 多轮对话（Phase 5A）**
+保持会话历史，支持追问和上下文引用。输入 `clear` 清空历史，`exit` 退出。
+
+```bash
+python -m app.agent.chat <user_id>
+```
+
+示例对话：
+```
+你：最近有哪些风险？
+助手：共找到 X 条风险：...
+
+你：第一条具体是什么情况？
+助手：（基于上轮结果继续回答，无需重新检索）
 ```
 
 Agent 可调用的工具：
@@ -228,8 +244,10 @@ MeetAgent/
       prompts.py           # 问答 prompt 模板
     agent/
       tools.py             # 工具定义（schema + 执行函数）
-      loop.py              # Agent 主循环（function calling）
-      ask.py               # Agent CLI 入口（Phase 4）
+      loop.py              # Agent 主循环（function calling + 多轮历史）
+      ask.py               # 单次问答 CLI（Phase 4）
+      chat.py              # 多轮对话 CLI（Phase 5A）
+      session.py           # 服务端会话管理（HTTP 用）
   scripts/                 # 运维和调试工具脚本
   data/
     meetagent.db           # SQLite 数据库（自动生成）
@@ -250,5 +268,6 @@ MeetAgent/
 - [x] 阶段二：结构化会议记忆（摘要、待办、决策、风险、实体 map-reduce 抽取）
 - [x] 阶段三：混合检索（BM25 + 向量检索 + RRF 融合）
 - [x] 阶段四：工具调用与 Agent 化（function calling + 6 个结构化记忆工具）
-- [ ] 阶段五：跨会议记忆追踪与多轮对话
+- [x] 阶段五A：多轮对话（会话历史管理）
+- [ ] 阶段五B：跨会议记忆追踪
 

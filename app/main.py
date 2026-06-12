@@ -36,6 +36,7 @@ class QAResponse(BaseModel):
 class AgentRequest(BaseModel):
     question: str
     user_id: Optional[str] = None
+    session_id: Optional[str] = None
     max_turns: int = 5
 
 
@@ -49,14 +50,31 @@ class ToolCallItem(BaseModel):
 class AgentResponse(BaseModel):
     answer: str
     tool_calls_log: list[ToolCallItem]
+    session_id: str
 
 
 # ---------- 路由 ----------
 
 @app.post("/agent/qa", response_model=AgentResponse)
 async def agent_qa(req: AgentRequest):
-    result = await run_agent(req.question, user_id=req.user_id, max_turns=req.max_turns)
-    return result
+    from app.agent import session as sess
+    session_id, history = sess.get_or_create(req.session_id, req.user_id)
+    result = await run_agent(
+        req.question, user_id=req.user_id, history=history, max_turns=req.max_turns
+    )
+    sess.update(session_id, result["history"])
+    return {
+        "answer": result["answer"],
+        "tool_calls_log": result["tool_calls_log"],
+        "session_id": session_id,
+    }
+
+
+@app.delete("/agent/session/{session_id}")
+def clear_session(session_id: str):
+    from app.agent import session as sess
+    sess.clear(session_id)
+    return {"ok": True}
 
 
 @app.post("/qa", response_model=QAResponse)
