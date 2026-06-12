@@ -17,6 +17,10 @@ models/
 # 未使用的模型文件（Phase 1 用 jieba，不需要此 tokenizer）
 data/dfm2.0-v3.5-tokenizer-model/
 
+# 前端依赖
+frontend/node_modules/
+frontend/dist/
+
 # Python 编译产物
 __pycache__/
 *.py[cod]
@@ -36,3 +40,4 @@ _*.txt
 
 # 本地私有文档（不公开）
 docs/architecture_deploy.md
+CURRENT_PROJECT_STATE.md
