@@ -1,0 +1,80 @@
+# -*- coding: utf-8 -*-
+"""Agent 主循环：LLM 决定调用工具 → 执行 → 返回结果 → 循环直到最终回答。"""
+
+import json
+from typing import Optional
+
+from app.llm.client import chat_with_tools
+from app.agent.tools import TOOLS, execute_tool
+
+SYSTEM_PROMPT = """你是一个会议智能助手，可以调用工具来查询用户的会议数据后回答问题。
+
+可用工具：
+- search_meetings：在会议转写原文中搜索相关片段（适合查具体内容、背景）
+- get_action_items：查询结构化待办事项（适合"有哪些任务/待办"）
+- get_decisions：查询决策记录（适合"做了哪些决定"）
+- get_risks：查询风险项（适合"有哪些风险/问题"）
+- get_meeting_summary：获取某场会议的摘要（需要 note_id）
+- list_meetings：列出会议清单（适合查"最近开了哪些会"，或查 note_id）
+
+规则：
+1. 根据问题类型选择最合适的工具，可以组合调用多个工具。
+2. 只基于工具返回的真实数据回答，不要编造。
+3. 如果工具返回"无记录"，如实告知用户。
+4. 回答时注明信息来源（会议名称、日期）。"""
+
+
+async def run_agent(
+    question: str,
+    user_id: Optional[str] = None,
+    max_turns: int = 5,
+) -> dict:
+    """运行 Agent 循环，返回 {answer, tool_calls_log}。"""
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": question},
+    ]
+    tool_calls_log = []
+
+    for turn in range(max_turns):
+        response = await chat_with_tools(messages, TOOLS)
+        finish_reason = response["finish_reason"]
+        msg = response["message"]
+
+        if finish_reason == "tool_calls":
+            # 把 assistant 消息（含 tool_calls）追加到对话
+            messages.append(msg)
+
+            for tc in msg.get("tool_calls", []):
+                fn = tc["function"]
+                tool_name = fn["name"]
+                try:
+                    args = json.loads(fn["arguments"])
+                except Exception:
+                    args = {}
+
+                result = execute_tool(tool_name, args, user_id)
+
+                tool_calls_log.append({
+                    "turn": turn + 1,
+                    "tool": tool_name,
+                    "arguments": args,
+                    "result_preview": result[:200],
+                })
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": result,
+                })
+        else:
+            # finish_reason == "stop"，最终回答
+            return {
+                "answer": msg.get("content", ""),
+                "tool_calls_log": tool_calls_log,
+            }
+
+    return {
+        "answer": "抱歉，未能在有限步骤内完成回答，请重新提问或换一种描述方式。",
+        "tool_calls_log": tool_calls_log,
+    }

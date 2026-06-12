@@ -4,6 +4,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from app.qa.service import ask
+from app.agent.loop import run_agent
 from app.storage.db import get_connection
 
 app = FastAPI(title="MeetAgent", description="会议智能问答系统")
@@ -32,7 +33,31 @@ class QAResponse(BaseModel):
     sources: list[SourceItem]
 
 
+class AgentRequest(BaseModel):
+    question: str
+    user_id: Optional[str] = None
+    max_turns: int = 5
+
+
+class ToolCallItem(BaseModel):
+    turn: int
+    tool: str
+    arguments: dict
+    result_preview: str
+
+
+class AgentResponse(BaseModel):
+    answer: str
+    tool_calls_log: list[ToolCallItem]
+
+
 # ---------- 路由 ----------
+
+@app.post("/agent/qa", response_model=AgentResponse)
+async def agent_qa(req: AgentRequest):
+    result = await run_agent(req.question, user_id=req.user_id, max_turns=req.max_turns)
+    return result
+
 
 @app.post("/qa", response_model=QAResponse)
 async def qa(req: QARequest):
