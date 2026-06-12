@@ -52,6 +52,40 @@ async def chat_json(messages: list[dict], temperature: float = 0.0) -> dict:
     return json.loads(_extract_json(raw))
 
 
+async def chat_stream(messages: list[dict], temperature: float = 0.2):
+    """流式调用（无工具），逐 token yield str。"""
+    if not APIFUSION_API_KEY:
+        raise ValueError("APIFUSION_API_KEY 未设置，请检查 .env 文件")
+
+    payload = {
+        "model": APIFUSION_MODEL,
+        "messages": messages,
+        "temperature": temperature,
+        "stream": True,
+    }
+    headers = {
+        "Authorization": f"Bearer {APIFUSION_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        async with client.stream("POST", APIFUSION_API_URL, json=payload, headers=headers) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data = line[6:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                    content = chunk["choices"][0]["delta"].get("content")
+                    if content:
+                        yield content
+                except Exception:
+                    continue
+
+
 async def chat_with_tools(
     messages: list[dict],
     tools: list[dict],

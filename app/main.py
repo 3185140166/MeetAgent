@@ -1,13 +1,24 @@
 # -*- coding: utf-8 -*-
+import json
 from typing import Optional
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.qa.service import ask
-from app.agent.loop import run_agent
+from app.agent.loop import run_agent, run_agent_stream
 from app.storage.db import get_connection, init_db
 
 app = FastAPI(title="MeetAgent", description="会议智能问答系统")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.on_event("startup")
@@ -82,6 +93,52 @@ def get_session(session_id: str):
     if not messages:
         raise HTTPException(status_code=404, detail="session 不存在或已过期")
     return {"session_id": session_id, "messages": messages}
+
+
+@app.post("/agent/qa/stream")
+async def agent_qa_stream(req: AgentRequest):
+    """SSE 流式问答。事件格式：data: {json}\n\n
+    事件类型：session_id / tool_start / tool_done / token / done / error
+    """
+    from app.agent import session as sess
+
+    session_id, history = sess.get_or_create(req.session_id, req.user_id)
+
+    async def event_gen():
+        yield f"data: {json.dumps({'type': 'session_id', 'session_id': session_id}, ensure_ascii=False)}\n\n"
+
+        answer_parts: list[str] = []
+        tool_calls_log: list = []
+
+        try:
+            async for event in run_agent_stream(
+                req.question,
+                user_id=req.user_id,
+                history=history,
+                max_turns=req.max_turns,
+            ):
+                if event["type"] == "token":
+                    answer_parts.append(event["content"])
+                elif event["type"] == "done":
+                    tool_calls_log = event.get("tool_calls_log", [])
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
+            return
+
+        answer = "".join(answer_parts)
+        if answer:
+            sess.append_turn(session_id, req.question, answer, tool_calls_log)
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.delete("/agent/session/{session_id}")

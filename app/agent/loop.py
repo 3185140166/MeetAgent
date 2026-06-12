@@ -4,7 +4,7 @@
 import json
 from typing import Optional
 
-from app.llm.client import chat_with_tools
+from app.llm.client import chat_with_tools, chat_stream
 from app.agent.tools import TOOLS, execute_tool
 
 SYSTEM_PROMPT = """你是一个会议智能助手，可以调用工具来查询用户的会议数据后回答问题。
@@ -94,3 +94,68 @@ async def run_agent(
             {"role": "assistant", "content": answer},
         ],
     }
+
+
+async def run_agent_stream(
+    question: str,
+    user_id: Optional[str] = None,
+    history: Optional[list] = None,
+    max_turns: int = 5,
+):
+    """流式 Agent 循环。yield 事件 dict：
+    - {"type": "tool_start", "tool": str, "arguments": dict}
+    - {"type": "tool_done",  "tool": str, "preview": str}
+    - {"type": "token",      "content": str}
+    - {"type": "done",       "tool_calls_log": list}
+    - {"type": "error",      "message": str}
+    工具调用轮次非流式等待，最终回答轮次切换 stream=True 逐 token 输出。
+    """
+    if history is None:
+        history = []
+
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages.extend(history)
+    messages.append({"role": "user", "content": question})
+
+    tool_calls_log = []
+
+    for turn in range(max_turns):
+        response = await chat_with_tools(messages, TOOLS)
+        finish_reason = response["finish_reason"]
+        msg = response["message"]
+
+        if finish_reason == "tool_calls":
+            messages.append(msg)
+            for tc in msg.get("tool_calls", []):
+                fn = tc["function"]
+                tool_name = fn["name"]
+                try:
+                    args = json.loads(fn["arguments"])
+                except Exception:
+                    args = {}
+
+                yield {"type": "tool_start", "tool": tool_name, "arguments": args}
+
+                result = execute_tool(tool_name, args, user_id)
+                tool_calls_log.append({
+                    "turn": turn + 1,
+                    "tool": tool_name,
+                    "arguments": args,
+                    "result_preview": result[:200],
+                })
+
+                yield {"type": "tool_done", "tool": tool_name, "preview": result[:100]}
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": result,
+                })
+        else:
+            # 最终回答：用流式接口逐 token 输出
+            async for token in chat_stream(messages):
+                yield {"type": "token", "content": token}
+            yield {"type": "done", "tool_calls_log": tool_calls_log}
+            return
+
+    yield {"type": "error", "message": "超过最大工具调用轮次，请重新提问"}
