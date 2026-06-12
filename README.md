@@ -85,15 +85,35 @@ python scripts/build_index.py --user-id <user_id> --batch-size 64
 
 ### 6. 问答
 
-**CLI：**
+系统提供两种问答模式：
+
+**模式 A：检索问答（Phase 1-3）**
+直接用混合检索找相关原文片段，交给 LLM 回答。适合查具体发言内容。
 
 ```bash
-# 提问（全局）
 python -m app.qa.ask "爆品战略主要讲了什么？"
-
-# 限定某个用户的会议
 python -m app.qa.ask "有哪些待办事项？" <user_id>
 ```
+
+**模式 B：Agent 问答（Phase 4）**
+LLM 自主决定调用哪些工具（结构化查询 / 原文检索），支持更复杂的问题。
+
+```bash
+python -m app.agent.ask "我有哪些待办事项？" <user_id>
+python -m app.agent.ask "最近的会议有哪些主要风险？" <user_id>
+python -m app.agent.ask "上周做了哪些决策？" <user_id>
+```
+
+Agent 可调用的工具：
+
+| 工具 | 作用 |
+|------|------|
+| `search_meetings` | 混合检索会议原文片段 |
+| `get_action_items` | 查询结构化待办事项 |
+| `get_decisions` | 查询决策记录 |
+| `get_risks` | 查询风险项 |
+| `get_meeting_summary` | 获取某场会议摘要 |
+| `list_meetings` | 列出会议清单 |
 
 **启动 HTTP 服务：**
 
@@ -107,7 +127,8 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/qa` | 问答，返回答案和引用来源 |
+| POST | `/qa` | 检索问答（Phase 1-3），返回答案和引用来源 |
+| POST | `/agent/qa` | Agent 问答（Phase 4），返回答案和工具调用日志 |
 | GET  | `/meetings` | 会议列表，支持 `?user_id=` 过滤 |
 | GET  | `/meetings/{note_id}` | 单场会议详情 |
 | GET  | `/chunks/{chunk_id}` | 单个文本片段 |
@@ -184,7 +205,7 @@ MeetAgent/
   app/
     config.py              # 环境变量配置
     main.py                # FastAPI 服务入口
-    llm/client.py          # 大模型调用封装（支持 chat / chat_json）
+    llm/client.py          # 大模型调用封装（chat / chat_json / chat_with_tools）
     storage/
       schema.sql           # 数据库表结构
       db.py                # 数据库连接
@@ -202,9 +223,13 @@ MeetAgent/
       prompts.py           # 抽取 prompt 模板
       run.py               # 抽取 CLI
     qa/
-      ask.py               # CLI 问答入口
+      ask.py               # CLI 问答入口（Phase 1-3，纯检索模式）
       service.py           # 问答服务
       prompts.py           # 问答 prompt 模板
+    agent/
+      tools.py             # 工具定义（schema + 执行函数）
+      loop.py              # Agent 主循环（function calling）
+      ask.py               # Agent CLI 入口（Phase 4）
   scripts/                 # 运维和调试工具脚本
   data/
     meetagent.db           # SQLite 数据库（自动生成）
@@ -224,5 +249,6 @@ MeetAgent/
 - [x] 阶段一：本地会议问答（BM25 + 大模型）
 - [x] 阶段二：结构化会议记忆（摘要、待办、决策、风险、实体 map-reduce 抽取）
 - [x] 阶段三：混合检索（BM25 + 向量检索 + RRF 融合）
-- [ ] 阶段四：工具调用与 Agent 化
+- [x] 阶段四：工具调用与 Agent 化（function calling + 6 个结构化记忆工具）
+- [ ] 阶段五：跨会议记忆追踪与多轮对话
 
