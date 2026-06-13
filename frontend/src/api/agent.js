@@ -4,7 +4,7 @@ const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
  * 流式问答，async generator，逐个 yield SSE 事件对象。
  * 事件类型：session_id / tool_start / tool_done / token / done / error
  */
-export async function* streamChat({ question, userId, sessionId, maxTurns = 5 }) {
+export async function* streamChat({ question, userId, sessionId, maxTurns = 10 }) {
   const res = await fetch(`${API_BASE}/agent/qa/stream`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -44,4 +44,26 @@ export async function getSessionMessages(sessionId) {
 
 export async function deleteSession(sessionId) {
   await fetch(`${API_BASE}/agent/session/${sessionId}`, { method: 'DELETE' })
+}
+
+async function getJson(path) {
+  const res = await fetch(`${API_BASE}${path}`)
+  if (!res.ok) throw new Error(`请求失败：HTTP ${res.status}`)
+  return res.json()
+}
+
+export function getStats() {
+  return getJson('/stats')
+}
+
+export function getUsers() {
+  return getJson('/users')
+}
+
+export function getUserMeetings(userId) {
+  return getJson(`/users/${encodeURIComponent(userId)}/meetings`)
+}
+
+export function getSessions() {
+  return getJson('/sessions')
 }

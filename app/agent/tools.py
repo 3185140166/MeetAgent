@@ -3,6 +3,7 @@
 
 import json
 from typing import Optional
+from app.config import ENABLE_HYBRID_SEARCH
 from app.storage.db import get_connection
 
 # ---------- 工具 Schema ----------
@@ -108,6 +109,98 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_meeting_detail",
+            "description": (
+                "获取某场会议的详情，包括会议元信息、摘要、待办、决策、风险和部分原文片段。"
+                "适用于用户已经指定某场会议或 note_id，需要深入查看该会议内容时。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "note_id": {"type": "string", "description": "会议唯一ID"},
+                    "chunk_limit": {"type": "integer", "description": "返回原文片段数量，默认5，最大20"},
+                },
+                "required": ["note_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_by_time_range",
+            "description": (
+                "按时间范围搜索会议内容。适用于'上周'、'最近一个月'、'某段时间讨论了什么'等问题。"
+                "时间格式使用 YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "要搜索的主题或关键词，可为空"},
+                    "start": {"type": "string", "description": "开始时间，如 2026-06-01"},
+                    "end": {"type": "string", "description": "结束时间，如 2026-06-13"},
+                    "limit": {"type": "integer", "description": "返回数量，默认10，最大30"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_topic_history",
+            "description": (
+                "梳理某个主题、项目、客户、产品或问题在历史会议中的讨论记录。"
+                "适用于'这个问题之前怎么讨论的'、'某项目历史进展'等问题。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "要追踪的主题、项目、客户、产品或关键词"},
+                    "limit": {"type": "integer", "description": "返回会议/片段数量，默认10，最大30"},
+                },
+                "required": ["topic"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_weekly_report",
+            "description": (
+                "基于指定时间范围内的结构化会议记忆生成周报素材，汇总摘要、待办、决策和风险。"
+                "适用于'生成本周周报'、'这周做了什么'等问题。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "start": {"type": "string", "description": "开始日期，如 2026-06-08"},
+                    "end": {"type": "string", "description": "结束日期，如 2026-06-14"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": (
+                "联网搜索会议库之外的外部信息。适用于用户明确要求联网搜索、查询最新信息、"
+                "或需要补充外部公司/产品/技术/政策背景时。不要用它替代本地会议检索。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "联网搜索关键词或自然语言查询"},
+                    "max_results": {"type": "integer", "description": "返回结果数量，默认5，最大10"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 
@@ -136,18 +229,86 @@ def execute_tool(name: str, arguments: dict, user_id: Optional[str]) -> str:
         return _tool_get_meeting_summary(arguments.get("note_id", ""), user_id)
     if name == "list_meetings":
         return _tool_list_meetings(user_id, arguments.get("limit", 10))
+    if name == "get_meeting_detail":
+        return _tool_get_meeting_detail(
+            arguments.get("note_id", ""),
+            user_id,
+            arguments.get("chunk_limit", 5),
+        )
+    if name == "search_by_time_range":
+        return _tool_search_by_time_range(
+            user_id=user_id,
+            query=arguments.get("query", ""),
+            start=arguments.get("start"),
+            end=arguments.get("end"),
+            limit=arguments.get("limit", 10),
+        )
+    if name == "get_topic_history":
+        return _tool_get_topic_history(
+            user_id=user_id,
+            topic=arguments.get("topic", ""),
+            limit=arguments.get("limit", 10),
+        )
+    if name == "generate_weekly_report":
+        return _tool_generate_weekly_report(
+            user_id=user_id,
+            start=arguments.get("start"),
+            end=arguments.get("end"),
+        )
+    if name == "web_search":
+        return _tool_web_search(
+            query=arguments.get("query", ""),
+            max_results=arguments.get("max_results"),
+        )
     return f"未知工具: {name}"
 
 
-def _tool_search_meetings(query: str, user_id: Optional[str]) -> str:
+def _safe_limit(value, default: int, maximum: int) -> int:
     try:
-        from app.embed.vector_store import count
-        if count() > 0:
-            from app.search.hybrid import search as hybrid_search
-            hits = hybrid_search(query, user_id=user_id, top_k=5)
-        else:
-            raise Exception("no vectors")
+        return min(max(int(value), 1), maximum)
     except Exception:
+        return default
+
+
+def _date_filter_sql(alias: str, start: Optional[str], end: Optional[str], params: list) -> list[str]:
+    where = []
+    if start:
+        where.append(f"{alias}.create_time >= ?")
+        params.append(start)
+    if end:
+        where.append(f"{alias}.create_time <= ?")
+        params.append(end)
+    return where
+
+
+def _fmt_meeting_ref(row: dict) -> str:
+    title = row.get("title") or "未命名会议"
+    create_time = (row.get("create_time") or "")[:10]
+    return f"《{title}》{create_time}"
+
+
+def _tool_web_search(query: str, max_results=None) -> str:
+    try:
+        from app.agent.web_search import format_web_results, search_web
+        results = search_web(query, max_results=max_results)
+        return format_web_results(results)
+    except Exception as e:
+        return f"联网搜索失败：{type(e).__name__}: {e}"
+
+
+def _tool_search_meetings(query: str, user_id: Optional[str]) -> str:
+    if ENABLE_HYBRID_SEARCH:
+        try:
+            from app.embed.vector_store import count
+            if count() > 0:
+                from app.search.hybrid import search as hybrid_search
+                hits = hybrid_search(query, user_id=user_id, top_k=5)
+            else:
+                raise Exception("no vectors")
+        except Exception:
+            from app.search.bm25 import search as bm25_search
+            hits = bm25_search(query, user_id=user_id, top_k=5)
+    else:
         from app.search.bm25 import search as bm25_search
         hits = bm25_search(query, user_id=user_id, top_k=5)
 
@@ -317,3 +478,296 @@ def _tool_list_meetings(user_id: Optional[str], limit: int) -> str:
         dur = f" {int(r['duration_minutes'])}分钟" if r.get("duration_minutes") else ""
         lines.append(f"• [{r['create_time'][:10]}]{dur} 《{r['title']}》  note_id={r['note_id']}")
     return f"共 {len(rows)} 场会议（最近优先）：\n" + "\n".join(lines)
+
+
+def _tool_get_meeting_detail(note_id: str, user_id: Optional[str], chunk_limit: int) -> str:
+    chunk_limit = _safe_limit(chunk_limit, 5, 20)
+    conn = get_connection()
+    params = [note_id]
+    owner_filter = ""
+    if user_id:
+        owner_filter = " AND user_id = ?"
+        params.append(user_id)
+
+    meeting = conn.execute(
+        f"SELECT * FROM meetings WHERE note_id = ?{owner_filter}",
+        params,
+    ).fetchone()
+    if not meeting:
+        conn.close()
+        return f"未找到 note_id={note_id} 的会议（或无权限）。"
+
+    meeting = dict(meeting)
+    summary = conn.execute(
+        "SELECT summary, topics, key_points FROM meeting_summaries WHERE note_id = ?",
+        (note_id,),
+    ).fetchone()
+    action_items = [dict(r) for r in conn.execute(
+        "SELECT content, owner, due FROM action_items WHERE note_id = ? ORDER BY id LIMIT 20",
+        (note_id,),
+    ).fetchall()]
+    decisions = [dict(r) for r in conn.execute(
+        "SELECT content FROM decisions WHERE note_id = ? ORDER BY id LIMIT 20",
+        (note_id,),
+    ).fetchall()]
+    risks = [dict(r) for r in conn.execute(
+        "SELECT content FROM risks WHERE note_id = ? ORDER BY id LIMIT 20",
+        (note_id,),
+    ).fetchall()]
+    chunks = [dict(r) for r in conn.execute(
+        "SELECT chunk_index, speaker, text FROM chunks WHERE note_id = ? ORDER BY chunk_index LIMIT ?",
+        (note_id, chunk_limit),
+    ).fetchall()]
+    conn.close()
+
+    parts = [
+        f"会议详情：{_fmt_meeting_ref(meeting)}",
+        f"note_id={meeting['note_id']} | user_id={meeting.get('user_id') or ''} | 时长={meeting.get('duration_minutes') or ''}分钟",
+    ]
+
+    if summary:
+        summary = dict(summary)
+        if summary.get("summary"):
+            parts.append(f"\n摘要：{summary['summary']}")
+        if summary.get("topics"):
+            try:
+                parts.append("主题：" + "、".join(json.loads(summary["topics"])))
+            except Exception:
+                pass
+        if summary.get("key_points"):
+            try:
+                parts.append("要点：\n" + "\n".join(f"  • {p}" for p in json.loads(summary["key_points"])))
+            except Exception:
+                pass
+    else:
+        parts.append("\n该会议尚未做结构化摘要抽取。")
+
+    if action_items:
+        parts.append("\n待办：\n" + "\n".join(
+            f"  • {r['content']}"
+            + (f" [负责人: {r['owner']}]" if r.get("owner") else "")
+            + (f" [截止: {r['due']}]" if r.get("due") else "")
+            for r in action_items
+        ))
+    if decisions:
+        parts.append("\n决策：\n" + "\n".join(f"  • {r['content']}" for r in decisions))
+    if risks:
+        parts.append("\n风险：\n" + "\n".join(f"  • {r['content']}" for r in risks))
+    if chunks:
+        parts.append("\n原文片段：\n" + "\n\n".join(
+            f"[chunk#{r['chunk_index']} 发言人:{r.get('speaker') or ''}]\n{r['text'][:800]}"
+            for r in chunks
+        ))
+
+    return "\n".join(parts)
+
+
+def _tool_search_by_time_range(
+    user_id: Optional[str],
+    query: str,
+    start: Optional[str],
+    end: Optional[str],
+    limit: int,
+) -> str:
+    limit = _safe_limit(limit, 10, 30)
+    query = (query or "").strip()
+    conn = get_connection()
+    params = []
+    where = []
+    if user_id:
+        where.append("m.user_id = ?")
+        params.append(user_id)
+    where.extend(_date_filter_sql("m", start, end, params))
+    if query:
+        like = f"%{query}%"
+        where.append("(m.title LIKE ? OR c.text LIKE ?)")
+        params.extend([like, like])
+    where_sql = " WHERE " + " AND ".join(where) if where else ""
+    params.append(limit)
+
+    rows = [dict(r) for r in conn.execute(
+        f"""
+        SELECT
+          m.note_id,
+          m.title,
+          m.create_time,
+          c.chunk_index,
+          c.speaker,
+          c.text
+        FROM meetings m
+        JOIN chunks c ON c.note_id = m.note_id
+        {where_sql}
+        ORDER BY m.create_time DESC, c.chunk_index ASC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()]
+    conn.close()
+
+    if not rows:
+        return "该时间范围内未找到相关会议内容。"
+
+    range_text = f"{start or '最早'} 至 {end or '最新'}"
+    lines = [f"时间范围：{range_text}，共找到 {len(rows)} 条相关片段："]
+    for i, r in enumerate(rows, 1):
+        lines.append(
+            f"\n[片段{i}] {_fmt_meeting_ref(r)} | chunk#{r['chunk_index']} | 发言人:{r.get('speaker') or ''}\n"
+            f"{r['text'][:700]}"
+        )
+    return "\n".join(lines)
+
+
+def _tool_get_topic_history(user_id: Optional[str], topic: str, limit: int) -> str:
+    topic = (topic or "").strip()
+    if not topic:
+        return "请提供要追踪的主题或关键词。"
+    limit = _safe_limit(limit, 10, 30)
+    like = f"%{topic}%"
+
+    conn = get_connection()
+    params = []
+    user_filter = ""
+    if user_id:
+        user_filter = "AND m.user_id = ?"
+        params.append(user_id)
+
+    rows = [dict(r) for r in conn.execute(
+        f"""
+        SELECT
+          m.note_id,
+          m.title,
+          m.create_time,
+          c.chunk_index,
+          c.speaker,
+          c.text
+        FROM chunks c
+        JOIN meetings m ON m.note_id = c.note_id
+        WHERE c.text LIKE ?
+        {user_filter}
+        ORDER BY m.create_time ASC, c.chunk_index ASC
+        LIMIT ?
+        """,
+        [like] + params + [limit],
+    ).fetchall()]
+
+    memories = [dict(r) for r in conn.execute(
+        f"""
+        SELECT 'summary' AS type, m.title, m.create_time, ms.summary AS content
+        FROM meeting_summaries ms JOIN meetings m ON m.note_id = ms.note_id
+        WHERE ms.summary LIKE ? {user_filter}
+        UNION ALL
+        SELECT 'decision' AS type, m.title, m.create_time, d.content
+        FROM decisions d JOIN meetings m ON m.note_id = d.note_id
+        WHERE d.content LIKE ? {user_filter}
+        UNION ALL
+        SELECT 'risk' AS type, m.title, m.create_time, r.content
+        FROM risks r JOIN meetings m ON m.note_id = r.note_id
+        WHERE r.content LIKE ? {user_filter}
+        ORDER BY create_time ASC
+        LIMIT ?
+        """,
+        ([like] + params + [like] + params + [like] + params + [limit]),
+    ).fetchall()]
+    conn.close()
+
+    if not rows and not memories:
+        return f"未找到主题“{topic}”的历史讨论记录。"
+
+    parts = [f"主题“{topic}”的历史记录："]
+    if memories:
+        parts.append("\n结构化记忆：")
+        for r in memories:
+            parts.append(f"  • [{r['type']}] {_fmt_meeting_ref(r)}：{r['content']}")
+    if rows:
+        parts.append("\n原文片段（按时间升序）：")
+        for i, r in enumerate(rows, 1):
+            parts.append(
+                f"\n[片段{i}] {_fmt_meeting_ref(r)} | chunk#{r['chunk_index']} | 发言人:{r.get('speaker') or ''}\n"
+                f"{r['text'][:700]}"
+            )
+    return "\n".join(parts)
+
+
+def _tool_generate_weekly_report(
+    user_id: Optional[str],
+    start: Optional[str],
+    end: Optional[str],
+) -> str:
+    conn = get_connection()
+    params = []
+    where = []
+    if user_id:
+        where.append("m.user_id = ?")
+        params.append(user_id)
+    where.extend(_date_filter_sql("m", start, end, params))
+    where_sql = " WHERE " + " AND ".join(where) if where else ""
+
+    meetings = [dict(r) for r in conn.execute(
+        f"""
+        SELECT m.note_id, m.title, m.create_time, ms.summary
+        FROM meetings m
+        LEFT JOIN meeting_summaries ms ON ms.note_id = m.note_id
+        {where_sql}
+        ORDER BY m.create_time ASC
+        LIMIT 50
+        """,
+        params,
+    ).fetchall()]
+
+    def load_items(table: str) -> list[dict]:
+        return [dict(r) for r in conn.execute(
+            f"""
+            SELECT t.content, m.title, m.create_time
+            FROM {table} t JOIN meetings m ON m.note_id = t.note_id
+            {where_sql}
+            ORDER BY m.create_time ASC
+            LIMIT 50
+            """,
+            params,
+        ).fetchall()]
+
+    action_items = [dict(r) for r in conn.execute(
+        f"""
+        SELECT ai.content, ai.owner, ai.due, m.title, m.create_time
+        FROM action_items ai JOIN meetings m ON m.note_id = ai.note_id
+        {where_sql}
+        ORDER BY m.create_time ASC
+        LIMIT 50
+        """,
+        params,
+    ).fetchall()]
+    decisions = load_items("decisions")
+    risks = load_items("risks")
+    conn.close()
+
+    if not meetings:
+        return "该时间范围内没有会议记录，无法生成周报素材。"
+
+    range_text = f"{start or '最早'} 至 {end or '最新'}"
+    parts = [
+        f"周报素材（{range_text}）",
+        f"会议数量：{len(meetings)}",
+    ]
+    parts.append("\n会议摘要：")
+    for m in meetings:
+        summary = m.get("summary") or "尚未抽取摘要"
+        parts.append(f"  • {_fmt_meeting_ref(m)}：{summary}")
+
+    if decisions:
+        parts.append("\n关键决策：")
+        parts.extend(f"  • {r['content']} — {_fmt_meeting_ref(r)}" for r in decisions)
+    if action_items:
+        parts.append("\n待办事项：")
+        for r in action_items:
+            line = f"  • {r['content']}"
+            if r.get("owner"):
+                line += f" [负责人: {r['owner']}]"
+            if r.get("due"):
+                line += f" [截止: {r['due']}]"
+            line += f" — {_fmt_meeting_ref(r)}"
+            parts.append(line)
+    if risks:
+        parts.append("\n风险与问题：")
+        parts.extend(f"  • {r['content']} — {_fmt_meeting_ref(r)}" for r in risks)
+
+    return "\n".join(parts)

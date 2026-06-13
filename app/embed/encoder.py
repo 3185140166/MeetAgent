@@ -2,8 +2,10 @@
 """Embedding 编码器，支持本地模型（bge-small）和 DashScope API 两种方案。
 
 通过 EMBED_PROVIDER 环境变量切换：
-  local      - 使用 sentence-transformers 加载本地/HuggingFace 模型（默认）
-  dashscope  - 使用阿里云 DashScope API
+  local      - 使用 sentence-transformers 加载 EMBED_LOCAL_MODEL
+               如果 EMBED_LOCAL_MODEL 是本地路径，则只从该路径加载；
+               如果是 HuggingFace 模型名，则可能联网下载/补齐到 EMBED_MODEL_DIR。
+  dashscope  - 使用阿里云 DashScope API，不加载本地模型。
 """
 from typing import List
 from app.config import EMBED_PROVIDER, EMBED_LOCAL_MODEL, EMBED_MODEL_DIR, EMBED_DIM
@@ -16,10 +18,16 @@ def _get_local_model():
     global _local_model
     if _local_model is None:
         import os
+        from pathlib import Path
         from sentence_transformers import SentenceTransformer
+        from app.config import PROJECT_ROOT
         os.makedirs(EMBED_MODEL_DIR, exist_ok=True)
-        print(f"加载 Embedding 模型: {EMBED_LOCAL_MODEL}  缓存目录: {EMBED_MODEL_DIR}")
-        _local_model = SentenceTransformer(EMBED_LOCAL_MODEL, cache_folder=EMBED_MODEL_DIR)
+        model_path = Path(EMBED_LOCAL_MODEL)
+        if not model_path.is_absolute() and (PROJECT_ROOT / model_path).exists():
+            model_path = PROJECT_ROOT / model_path
+        model_name_or_path = str(model_path) if model_path.exists() else EMBED_LOCAL_MODEL
+        print(f"加载 Embedding 模型: {model_name_or_path}  缓存目录: {EMBED_MODEL_DIR}")
+        _local_model = SentenceTransformer(model_name_or_path, cache_folder=EMBED_MODEL_DIR)
         print("模型加载完成")
     return _local_model
 

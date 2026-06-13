@@ -26,7 +26,7 @@
               :key="tc.tool + tc.status"
               :class="['tool-badge', tc.status]"
             >
-              <span class="tool-icon">{{ tc.status === 'done' ? '✓' : '⟳' }}</span>
+              <span class="tool-icon">{{ tc.status === 'failed' ? '!' : tc.status === 'done' ? '✓' : '⟳' }}</span>
               {{ toolLabel(tc.tool) }}
             </span>
           </div>
@@ -91,6 +91,11 @@ const TOOL_LABELS = {
   get_risks: '查询风险项',
   get_meeting_summary: '获取会议摘要',
   list_meetings: '列出会议清单',
+  get_meeting_detail: '获取会议详情',
+  search_by_time_range: '按时间搜索',
+  get_topic_history: '追踪主题历史',
+  generate_weekly_report: '生成周报素材',
+  web_search: '联网搜索',
 }
 const toolLabel = (name) => TOOL_LABELS[name] || name
 
@@ -147,7 +152,7 @@ async function send() {
 
       } else if (event.type === 'tool_done') {
         const tc = assistantMsg.toolCalls.find(t => t.tool === event.tool && t.status === 'running')
-        if (tc) tc.status = 'done'
+        if (tc) tc.status = event.failed ? 'failed' : 'done'
 
       } else if (event.type === 'token') {
         assistantMsg.content += event.content
@@ -238,6 +243,7 @@ async function send() {
   color: #1d4ed8;
 }
 .tool-badge.done { background: #dcfce7; color: #15803d; }
+.tool-badge.failed { background: #fee2e2; color: #b91c1c; }
 
 .tool-icon { font-size: 11px; }
 

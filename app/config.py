@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
 from dotenv import load_dotenv
 import os
+from pathlib import Path
 
-load_dotenv()
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(PROJECT_ROOT / ".env")
 
 APIFUSION_API_URL: str = os.environ.get("APIFUSION_API_URL", "https://apifusion.aispeech.com.cn/v1/chat/completions")
 APIFUSION_API_KEY: str = os.environ.get("APIFUSION_API_KEY", "")
 APIFUSION_MODEL: str = os.environ.get("APIFUSION_MODEL", "gpt-5.5")
 DB_PATH: str = os.environ.get("DB_PATH", "data/meetagent.db")
 TOP_K: int = int(os.environ.get("TOP_K", "8"))
+ENABLE_HYBRID_SEARCH: bool = os.environ.get("ENABLE_HYBRID_SEARCH", "false").lower() in ("1", "true", "yes", "on")
 
 # 第二阶段：结构化抽取
 EXTRACT_WINDOW_CHARS: int = int(os.environ.get("EXTRACT_WINDOW_CHARS", "6000"))
@@ -22,3 +25,8 @@ EMBED_DIM: int = int(os.environ.get("EMBED_DIM", "512"))
 DASHSCOPE_BASE_URL: str = os.environ.get("DASHSCOPE_BASE_URL", "")
 DASHSCOPE_API_KEY: str = os.environ.get("DASHSCOPE_API_KEY", "")
 DASHSCOPE_EMBEDDING_MODEL: str = os.environ.get("DASHSCOPE_EMBEDDING_MODEL", "text-embedding-v4")
+
+# 联网搜索
+TAVILY_API_KEY: str = os.environ.get("TAVILY_API_KEY", "")
+TAVILY_API_URL: str = os.environ.get("TAVILY_API_URL", "https://api.tavily.com/search")
+WEB_SEARCH_MAX_RESULTS: int = int(os.environ.get("WEB_SEARCH_MAX_RESULTS", "5"))

@@ -8,6 +8,24 @@
 
 ### 1. 环境准备
 
+推荐使用 Conda（当前项目使用 Python 3.13.13）：
+
+```bash
+conda create -n meetagent python=3.13.13
+conda activate meetagent
+pip install -r requirements.txt
+```
+
+如果 Conda 源暂时没有 `3.13.13` 这个精确版本，可先使用可用的 Python 3.13.x：
+
+```bash
+conda create -n meetagent python=3.13
+conda activate meetagent
+pip install -r requirements.txt
+```
+
+也可以使用 Python 自带 venv：
+
 ```bash
 python -m venv .venv
 
@@ -35,8 +53,11 @@ APIFUSION_API_KEY=your_api_key_here   # 必填
 APIFUSION_MODEL=gpt-5.5
 DB_PATH=data/meetagent.db
 TOP_K=8                               # 问答检索片段数
+ENABLE_HYBRID_SEARCH=false            # 默认关闭向量混合检索，避免模型未就绪时自动下载
 EXTRACT_WINDOW_CHARS=6000             # 结构化抽取每窗口字数
 EXTRACT_CONCURRENCY=5                 # 抽取并发数
+TAVILY_API_KEY=your_tavily_key_here   # 可选，启用联网搜索工具
+WEB_SEARCH_MAX_RESULTS=5              # 联网搜索默认结果数
 ```
 
 ### 3. 导入会议数据
@@ -83,6 +104,32 @@ python scripts/build_index.py --user-id <user_id> --batch-size 64
 
 > 首次运行会自动下载 embedding 模型到 `models/` 目录（需要联网），之后离线可用。
 
+Embedding 配置含义：
+
+```env
+EMBED_PROVIDER=local
+EMBED_LOCAL_MODEL=models/BAAI/bge-small-zh-v1.5
+EMBED_MODEL_DIR=models
+EMBED_DIM=512
+```
+
+- `EMBED_PROVIDER=local`：使用本地 `sentence-transformers` 加载模型。
+- `EMBED_PROVIDER=dashscope`：使用 DashScope embedding API，不加载本地模型。
+- `EMBED_LOCAL_MODEL`：当 provider 为 `local` 时使用。可以是本地模型目录，也可以是 Hugging Face 模型名；如果写成本地目录，例如 `models/BAAI/bge-small-zh-v1.5`，就会直接从该目录加载。
+- `EMBED_MODEL_DIR`：传给 `sentence-transformers` 的缓存目录。它不是具体模型路径；只有当 `EMBED_LOCAL_MODEL` 写成 Hugging Face 模型名时，才会作为下载/缓存目录使用。
+
+如果本地 embedding 模型尚未完整下载，建议保持：
+
+```env
+ENABLE_HYBRID_SEARCH=false
+```
+
+此时系统只使用 BM25，不会在普通问答时自动连接 Hugging Face。模型和向量索引准备好后，再改为：
+
+```env
+ENABLE_HYBRID_SEARCH=true
+```
+
 ### 6. 问答
 
 系统提供两种问答模式：
@@ -97,6 +144,7 @@ python -m app.qa.ask "有哪些待办事项？" <user_id>
 
 **模式 B：Agent 单次问答（Phase 4）**
 LLM 自主决定调用哪些工具（结构化查询 / 原文检索），支持更复杂的问题。
+Agent 默认最多进行 10 轮工具调用；如果信息已足够，会提前结束并回答，不会强制跑满 10 轮。HTTP 接口会将 `max_turns` 限制在 1-20 之间。
 
 ```bash
 python -m app.agent.ask "我有哪些待办事项？" <user_id>
@@ -130,8 +178,29 @@ Agent 可调用的工具：
 | `get_risks` | 查询风险项 |
 | `get_meeting_summary` | 获取某场会议摘要 |
 | `list_meetings` | 列出会议清单 |
+| `get_meeting_detail` | 获取某场会议详情、结构化记忆和部分原文片段 |
+| `search_by_time_range` | 按时间范围搜索会议内容 |
+| `get_topic_history` | 追踪某个主题、项目、客户或问题的历史讨论 |
+| `generate_weekly_report` | 基于会议摘要、待办、决策和风险生成周报素材 |
+| `web_search` | 使用 Tavily 联网搜索外部信息，回答时附 URL 来源 |
+
+启用联网搜索需要在 `.env` 中配置 Tavily：
+
+```env
+TAVILY_API_KEY=your_tavily_key_here
+TAVILY_API_URL=https://api.tavily.com/search
+WEB_SEARCH_MAX_RESULTS=5
+```
 
 **启动 HTTP 服务：**
+
+如果使用 Conda 环境，先激活环境：
+
+```bash
+conda activate meetagent
+```
+
+然后在项目根目录启动后端：
 
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
@@ -139,12 +208,54 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 访问 `http://localhost:8000/docs` 查看交互式 API 文档。
 
+**启动前端：**
+
+另开一个终端，进入前端目录安装依赖并启动 Vite：
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+默认访问地址：
+
+```text
+http://localhost:5173
+```
+
+数据概览 / 管理页：
+
+```text
+http://localhost:5173/admin
+```
+
+管理页可查看全局数据、用户列表、用户会议列表、会话列表和会话消息。聊天会话会持久化到 SQLite 的 `chat_sessions` / `chat_messages` 表，不再按固定时间自动清理；后续如需“短期记忆 / 长期记忆”，应单独生成结构化记忆产物，而不是依赖聊天 session 过期逻辑。
+
+打开前端后，左侧“用户 ID”可以填写要查询的用户。测试数据中可先使用：
+
+```text
+1006734045
+```
+
+如果用户 ID 留空，则按全局数据查询，不做用户过滤。
+
+前端默认请求后端 `http://localhost:8000`。如需修改后端地址，可在 `frontend/.env` 中设置：
+
+```env
+VITE_API_BASE=http://localhost:8000
+```
+
 主要接口：
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | `/qa` | 检索问答（Phase 1-3），返回答案和引用来源 |
 | POST | `/agent/qa` | Agent 问答（Phase 4），返回答案和工具调用日志 |
+| GET  | `/stats` | 全局数据统计，用于数据概览页 |
+| GET  | `/users` | 用户数据概览列表 |
+| GET  | `/users/{user_id}/meetings` | 指定用户的会议列表 |
+| GET  | `/sessions` | 会话列表，用于管理页查看聊天记录 |
 | GET  | `/meetings` | 会议列表，支持 `?user_id=` 过滤 |
 | GET  | `/meetings/{note_id}` | 单场会议详情 |
 | GET  | `/chunks/{chunk_id}` | 单个文本片段 |

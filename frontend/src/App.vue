@@ -1,9 +1,11 @@
 <template>
-  <div class="app">
+  <AdminPage v-if="isAdminPage" />
+  <div v-else class="app">
     <!-- 侧边栏 -->
     <aside class="sidebar">
       <div class="sidebar-header">
         <span class="logo">MeetAgent</span>
+        <a class="admin-link" href="/admin">数据概览</a>
       </div>
 
       <!-- 用户 ID 输入 -->
@@ -33,7 +35,7 @@
     <!-- 主区域 -->
     <main class="main">
       <ChatWindow
-        :key="currentSessionId || 'new'"
+        :key="chatViewKey"
         :session-id="currentSessionId"
         :user-id="userId"
         :initial-messages="currentMessages"
@@ -46,7 +48,10 @@
 <script setup>
 import { ref, watch } from 'vue'
 import ChatWindow from './components/ChatWindow.vue'
+import AdminPage from './components/AdminPage.vue'
 import { getSessionMessages, deleteSession } from './api/agent.js'
+
+const isAdminPage = window.location.pathname === '/admin'
 
 // 用户 ID，持久化到 localStorage
 const userId = ref(localStorage.getItem('meetagent_user_id') || '')
@@ -59,10 +64,12 @@ watch(sessions, (v) => localStorage.setItem(SESSIONS_KEY, JSON.stringify(v)), { 
 
 const currentSessionId = ref(null)
 const currentMessages = ref([])
+const chatViewKey = ref(0)
 
 function newChat() {
   currentSessionId.value = null
   currentMessages.value = []
+  chatViewKey.value += 1
 }
 
 async function switchSession(s) {
@@ -81,6 +88,7 @@ async function switchSession(s) {
   } else {
     currentMessages.value = []
   }
+  chatViewKey.value += 1
 }
 
 async function removeSession(id) {
@@ -126,8 +134,19 @@ body {
 .sidebar-header {
   padding: 18px 16px 12px;
   border-bottom: 1px solid #334155;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 .logo { font-size: 16px; font-weight: 600; }
+.admin-link {
+  color: #93c5fd;
+  font-size: 12px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.admin-link:hover { color: #bfdbfe; }
 
 .user-input {
   padding: 12px 16px;

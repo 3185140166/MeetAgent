@@ -53,7 +53,7 @@ class AgentRequest(BaseModel):
     question: str
     user_id: Optional[str] = None
     session_id: Optional[str] = None
-    max_turns: int = 5
+    max_turns: int = 10
 
 
 class ToolCallItem(BaseModel):
@@ -61,6 +61,7 @@ class ToolCallItem(BaseModel):
     tool: str
     arguments: dict
     result_preview: str
+    failed: bool = False
 
 
 class AgentResponse(BaseModel):
@@ -69,14 +70,27 @@ class AgentResponse(BaseModel):
     session_id: str
 
 
+def _vector_index_count() -> int:
+    try:
+        from app.embed.vector_store import count
+        return count()
+    except Exception:
+        return 0
+
+
+def _clamp_max_turns(value: int) -> int:
+    return min(max(int(value), 1), 20)
+
+
 # ---------- 路由 ----------
 
 @app.post("/agent/qa", response_model=AgentResponse)
 async def agent_qa(req: AgentRequest):
     from app.agent import session as sess
     session_id, history = sess.get_or_create(req.session_id, req.user_id)
+    max_turns = _clamp_max_turns(req.max_turns)
     result = await run_agent(
-        req.question, user_id=req.user_id, history=history, max_turns=req.max_turns
+        req.question, user_id=req.user_id, history=history, max_turns=max_turns
     )
     sess.append_turn(session_id, req.question, result["answer"], result["tool_calls_log"])
     return {
@@ -91,7 +105,7 @@ def get_session(session_id: str):
     from app.agent import session as sess
     messages = sess.get_history(session_id)
     if not messages:
-        raise HTTPException(status_code=404, detail="session 不存在或已过期")
+        raise HTTPException(status_code=404, detail="session 不存在")
     return {"session_id": session_id, "messages": messages}
 
 
@@ -103,6 +117,7 @@ async def agent_qa_stream(req: AgentRequest):
     from app.agent import session as sess
 
     session_id, history = sess.get_or_create(req.session_id, req.user_id)
+    max_turns = _clamp_max_turns(req.max_turns)
 
     async def event_gen():
         yield f"data: {json.dumps({'type': 'session_id', 'session_id': session_id}, ensure_ascii=False)}\n\n"
@@ -115,7 +130,7 @@ async def agent_qa_stream(req: AgentRequest):
                 req.question,
                 user_id=req.user_id,
                 history=history,
-                max_turns=req.max_turns,
+                max_turns=max_turns,
             ):
                 if event["type"] == "token":
                     answer_parts.append(event["content"])
@@ -148,10 +163,98 @@ def clear_session(session_id: str):
     return {"ok": True}
 
 
+@app.get("/sessions")
+def list_sessions(user_id: Optional[str] = None, limit: int = 50, offset: int = 0):
+    from app.agent import session as sess
+    return sess.list_sessions(limit=limit, offset=offset, user_id=user_id)
+
+
 @app.post("/qa", response_model=QAResponse)
 async def qa(req: QARequest):
     result = await ask(req.question, user_id=req.user_id, top_k=req.top_k)
     return result
+
+
+@app.get("/stats")
+def get_stats():
+    conn = get_connection()
+    row = conn.execute(
+        """
+        SELECT
+          (SELECT COUNT(*) FROM meetings) AS meetings,
+          (SELECT COUNT(*) FROM chunks) AS chunks,
+          (SELECT COUNT(*) FROM meeting_summaries) AS summaries,
+          (SELECT COUNT(*) FROM action_items) AS action_items,
+          (SELECT COUNT(*) FROM decisions) AS decisions,
+          (SELECT COUNT(*) FROM risks) AS risks,
+          (SELECT COUNT(*) FROM entities) AS entities,
+          (SELECT COUNT(*) FROM chat_sessions) AS chat_sessions
+        """
+    ).fetchone()
+    conn.close()
+    data = dict(row)
+    data["vector_index_count"] = _vector_index_count()
+    return data
+
+
+@app.get("/config/status")
+def get_config_status():
+    from app.config import APIFUSION_API_KEY, TAVILY_API_KEY
+    return {
+        "llm_configured": bool(APIFUSION_API_KEY),
+        "web_search_configured": bool(TAVILY_API_KEY),
+    }
+
+
+@app.get("/users")
+def list_users():
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT
+          m.user_id,
+          COUNT(DISTINCT m.note_id) AS meetings,
+          COUNT(DISTINCT c.chunk_id) AS chunks,
+          COUNT(DISTINCT s.note_id) AS summaries,
+          MIN(m.create_time) AS earliest,
+          MAX(m.create_time) AS latest
+        FROM meetings m
+        LEFT JOIN chunks c ON c.note_id = m.note_id
+        LEFT JOIN meeting_summaries s ON s.note_id = m.note_id
+        GROUP BY m.user_id
+        ORDER BY meetings DESC, m.user_id ASC
+        """
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+@app.get("/users/{user_id}/meetings")
+def list_user_meetings(user_id: str, limit: int = 100, offset: int = 0):
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT
+          m.note_id,
+          m.user_id,
+          m.title,
+          m.create_time,
+          m.duration_minutes,
+          m.language,
+          COUNT(c.chunk_id) AS chunks,
+          CASE WHEN s.note_id IS NULL THEN 0 ELSE 1 END AS extracted
+        FROM meetings m
+        LEFT JOIN chunks c ON c.note_id = m.note_id
+        LEFT JOIN meeting_summaries s ON s.note_id = m.note_id
+        WHERE m.user_id = ?
+        GROUP BY m.note_id
+        ORDER BY m.create_time DESC
+        LIMIT ? OFFSET ?
+        """,
+        (user_id, limit, offset),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 @app.get("/meetings")

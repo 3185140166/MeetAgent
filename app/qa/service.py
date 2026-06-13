@@ -2,18 +2,19 @@
 from typing import Optional
 from app.llm.client import chat
 from app.qa.prompts import build_messages
-from app.config import TOP_K
+from app.config import ENABLE_HYBRID_SEARCH, TOP_K
 
 
 def _do_search(question: str, user_id: Optional[str], top_k: int):
     """优先使用混合检索；向量库为空时自动降级到 BM25。"""
-    try:
-        from app.embed.vector_store import count
-        if count() > 0:
-            from app.search.hybrid import search as hybrid_search
-            return hybrid_search(question, user_id=user_id, top_k=top_k)
-    except Exception:
-        pass
+    if ENABLE_HYBRID_SEARCH:
+        try:
+            from app.embed.vector_store import count
+            if count() > 0:
+                from app.search.hybrid import search as hybrid_search
+                return hybrid_search(question, user_id=user_id, top_k=top_k)
+        except Exception:
+            pass
     from app.search.bm25 import search as bm25_search
     return bm25_search(question, user_id=user_id, top_k=top_k)
 

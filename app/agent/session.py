@@ -1,36 +1,21 @@
 # -*- coding: utf-8 -*-
-"""SQLite 会话管理：持久化多轮对话历史，30 分钟无操作自动过期。"""
+"""SQLite 会话管理：持久化多轮对话历史。"""
 
 import uuid
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 
 from app.storage.db import get_connection
-
-_TTL = timedelta(minutes=30)
 
 
 def _now() -> str:
     return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _cutoff() -> str:
-    return (datetime.utcnow() - _TTL).strftime("%Y-%m-%d %H:%M:%S")
-
-
 def get_or_create(session_id: Optional[str], user_id: Optional[str]) -> tuple[str, list]:
     """返回 (session_id, history)。history 是 [{role, content}, ...] 列表。"""
     conn = get_connection()
-
-    # 清理过期 session
-    cut = _cutoff()
-    conn.execute(
-        "DELETE FROM chat_messages WHERE session_id IN "
-        "(SELECT session_id FROM chat_sessions WHERE updated_at < ?)", (cut,)
-    )
-    conn.execute("DELETE FROM chat_sessions WHERE updated_at < ?", (cut,))
-    conn.commit()
 
     if session_id:
         row = conn.execute(
@@ -88,6 +73,43 @@ def append_turn(
     )
     conn.commit()
     conn.close()
+
+
+def list_sessions(limit: int = 50, offset: int = 0, user_id: Optional[str] = None) -> list:
+    conn = get_connection()
+    params = []
+    where = ""
+    if user_id:
+        where = "WHERE s.user_id = ?"
+        params.append(user_id)
+    params.extend([limit, offset])
+
+    rows = conn.execute(
+        f"""
+        SELECT
+          s.session_id,
+          s.user_id,
+          s.created_at,
+          s.updated_at,
+          COUNT(m.id) AS message_count,
+          (
+            SELECT cm.content
+            FROM chat_messages cm
+            WHERE cm.session_id = s.session_id AND cm.role = 'user'
+            ORDER BY cm.id DESC
+            LIMIT 1
+          ) AS last_user_message
+        FROM chat_sessions s
+        LEFT JOIN chat_messages m ON m.session_id = s.session_id
+        {where}
+        GROUP BY s.session_id
+        ORDER BY s.updated_at DESC
+        LIMIT ? OFFSET ?
+        """,
+        params,
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 
 
 def get_history(session_id: str) -> list:
