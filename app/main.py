@@ -82,21 +82,66 @@ def _clamp_max_turns(value: int) -> int:
     return min(max(int(value), 1), 20)
 
 
+async def _run_memory_stop_hooks(
+    session_id: str,
+    user_id: Optional[str],
+    question: str,
+    answer: str,
+    tool_calls_log: list,
+) -> dict:
+    """Run post-answer memory hooks. Hook failures must not break chat."""
+    from app.agent import session as sess
+    from app.memory.extractor import extract_and_store_memories
+
+    result = {
+        "session_summary_updated": False,
+        "memories_extracted": 0,
+    }
+    try:
+        result["session_summary_updated"] = await sess.maybe_update_summary(session_id)
+    except Exception:
+        result["session_summary_updated"] = False
+
+    try:
+        summary = sess.get_summary(session_id)
+        memories = await extract_and_store_memories(
+            session_id=session_id,
+            user_id=user_id,
+            question=question,
+            answer=answer,
+            tool_calls_log=tool_calls_log,
+            session_summary=(summary or {}).get("summary", ""),
+        )
+        result["memories_extracted"] = len(memories)
+    except Exception:
+        result["memories_extracted"] = 0
+    return result
+
+
 # ---------- 路由 ----------
 
 @app.post("/agent/qa", response_model=AgentResponse)
 async def agent_qa(req: AgentRequest):
     from app.agent import session as sess
+    from app.memory.retrieval import build_memory_message
     session_id, history = sess.get_or_create_compacted(req.session_id, req.user_id)
+    memory_context = build_memory_message(req.question, req.user_id)
     max_turns = _clamp_max_turns(req.max_turns)
     result = await run_agent(
-        req.question, user_id=req.user_id, history=history, max_turns=max_turns
+        req.question,
+        user_id=req.user_id,
+        history=history,
+        memory_context=memory_context,
+        max_turns=max_turns,
     )
     sess.append_turn(session_id, req.question, result["answer"], result["tool_calls_log"])
-    try:
-        await sess.maybe_update_summary(session_id)
-    except Exception:
-        pass
+    await _run_memory_stop_hooks(
+        session_id=session_id,
+        user_id=req.user_id,
+        question=req.question,
+        answer=result["answer"],
+        tool_calls_log=result["tool_calls_log"],
+    )
     return {
         "answer": result["answer"],
         "tool_calls_log": result["tool_calls_log"],
@@ -128,8 +173,10 @@ async def agent_qa_stream(req: AgentRequest):
     事件类型：session_id / tool_start / tool_done / token / done / error
     """
     from app.agent import session as sess
+    from app.memory.retrieval import build_memory_message
 
     session_id, history = sess.get_or_create_compacted(req.session_id, req.user_id)
+    memory_context = build_memory_message(req.question, req.user_id)
     max_turns = _clamp_max_turns(req.max_turns)
 
     async def event_gen():
@@ -143,6 +190,7 @@ async def agent_qa_stream(req: AgentRequest):
                 req.question,
                 user_id=req.user_id,
                 history=history,
+                memory_context=memory_context,
                 max_turns=max_turns,
             ):
                 if event["type"] == "token":
@@ -157,12 +205,17 @@ async def agent_qa_stream(req: AgentRequest):
         answer = "".join(answer_parts)
         if answer:
             sess.append_turn(session_id, req.question, answer, tool_calls_log)
-            try:
-                updated = await sess.maybe_update_summary(session_id)
-                if updated:
-                    yield f"data: {json.dumps({'type': 'session_summary_updated'}, ensure_ascii=False)}\n\n"
-            except Exception:
-                pass
+            hook_result = await _run_memory_stop_hooks(
+                session_id=session_id,
+                user_id=req.user_id,
+                question=req.question,
+                answer=answer,
+                tool_calls_log=tool_calls_log,
+            )
+            if hook_result["session_summary_updated"]:
+                yield f"data: {json.dumps({'type': 'session_summary_updated'}, ensure_ascii=False)}\n\n"
+            if hook_result["memories_extracted"]:
+                yield f"data: {json.dumps({'type': 'memories_extracted', 'count': hook_result['memories_extracted']}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_gen(),
@@ -208,7 +261,8 @@ def get_stats():
           (SELECT COUNT(*) FROM risks) AS risks,
           (SELECT COUNT(*) FROM entities) AS entities,
           (SELECT COUNT(*) FROM chat_sessions) AS chat_sessions,
-          (SELECT COUNT(*) FROM session_summaries) AS session_summaries
+          (SELECT COUNT(*) FROM session_summaries) AS session_summaries,
+          (SELECT COUNT(*) FROM memories) AS memories
         """
     ).fetchone()
     conn.close()

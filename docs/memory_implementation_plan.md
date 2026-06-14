@@ -100,6 +100,10 @@ CREATE TABLE IF NOT EXISTS session_summaries (
 
 建立长期记忆的持久化模型，先做到可写、可查、可看，不急于自动化。
 
+### 当前实现状态
+
+已实现基础版。当前阶段只提供 Long-term Memory 的表结构、CRUD、FTS 同步、手动新增和查看脚本；不会自动从会话中抽取长期记忆，也不会自动注入 Agent 上下文。自动抽取属于阶段三，检索注入属于阶段五。
+
 ### 数据表
 
 新增：
@@ -181,6 +185,10 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
 
 在一轮对话结束后，从用户问题、助手回答、工具调用中抽取值得长期保存的信息。不要在每个 tool call 后写记忆，避免噪声。
 
+### 当前实现状态
+
+已实现基础版。`/agent/qa` 和 `/agent/qa/stream` 在保存一轮回答后会执行 Stop Hook：先尝试更新 Session Memory，再尝试抽取 Long-term Memory。长期记忆抽取默认关闭，需要设置 `MEMORY_EXTRACTION_ENABLED=true`；也可以用 `scripts/extract_memories.py <session_id> --force` 对指定会话最后一轮强制抽取。当前阶段只做 ADD，不做冲突合并、替换和删除，更新策略属于阶段四。
+
 ### 触发点
 
 非流式接口：
@@ -255,6 +263,10 @@ LLM 输出 JSON：
 
 避免只新增不更新导致记忆库膨胀、重复和冲突。
 
+### 当前实现状态
+
+已实现基础版。新候选 memory 写入前会查相似 active memory；存在相似项时由 LLM 判断 `ADD / UPDATE / REPLACE / IGNORE`。`REPLACE` 会把旧 memory 标记为 `deprecated`，不会物理删除。
+
 ### 更新动作
 
 - `ADD`：没有相似旧记忆，新增。
@@ -314,6 +326,10 @@ status = deleted
 ### 目标
 
 在每轮 Agent 开始前，判断是否需要查长期记忆，召回相关 memory，并注入到当前上下文。
+
+### 当前实现状态
+
+已实现基础版，默认关闭。设置 `MEMORY_RETRIEVAL_ENABLED=true` 后，系统会用规则 Router 判断是否召回长期记忆，并把命中的 memory 作为 `<memory>` meta message 注入到当前用户问题之前。
 
 ### Router
 
@@ -379,6 +395,10 @@ status = deleted
 ### 目标
 
 把已有会议结构化记忆转为少量高价值长期记忆，而不是把所有会议内容重复存一遍。
+
+### 当前实现状态
+
+已实现基础版脚本：`scripts/build_meeting_memories.py`。它从 `meeting_summaries.topics` 中统计多场会议反复出现的主题，生成 `meeting_topic/topic` 类型的长期记忆，并保留来源会议 evidence。
 
 ### 来源
 
@@ -446,6 +466,10 @@ extracted_meeting
 ### 目标
 
 让错误、过期、低价值记忆自然沉下去。
+
+### 当前实现状态
+
+已实现基础版。`scripts/clean_memories.py` 会把过期 memory 标记为 `expired`，把长期未更新且低于 trust 阈值的 active memory 标记为 `deprecated`，并重建 FTS；不会物理删除。
 
 ### 初始规则
 

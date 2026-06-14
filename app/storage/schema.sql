@@ -115,3 +115,34 @@ CREATE TABLE IF NOT EXISTS session_summaries (
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY(session_id) REFERENCES chat_sessions(session_id)
 );
+
+-- ========== Long-term Memory：跨会话长期记忆 ==========
+
+CREATE TABLE IF NOT EXISTS memories (
+  memory_id TEXT PRIMARY KEY,
+  user_id TEXT,
+  scope TEXT NOT NULL,          -- user / project / meeting_topic
+  memory_type TEXT NOT NULL,    -- preference / fact / task / topic / decision / risk
+  subject TEXT,
+  content TEXT NOT NULL,
+  status TEXT DEFAULT 'active', -- active / deprecated / deleted / expired
+  trust_score REAL DEFAULT 0.7,
+  source_type TEXT,             -- chat / meeting / extracted_meeting / manual
+  source_id TEXT,               -- session_id / note_id / other id
+  evidence TEXT,                -- JSON
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  expires_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_memories_user_status ON memories(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_memories_scope_type ON memories(scope, memory_type);
+CREATE INDEX IF NOT EXISTS idx_memories_subject ON memories(subject);
+CREATE INDEX IF NOT EXISTS idx_memories_updated ON memories(updated_at);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+  memory_id UNINDEXED,
+  user_id UNINDEXED,
+  subject,
+  content
+);

@@ -74,6 +74,7 @@ async def run_agent(
     question: str,
     user_id: Optional[str] = None,
     history: Optional[list] = None,
+    memory_context: Optional[dict] = None,
     max_turns: int = 10,
 ) -> dict:
     """运行 Agent 循环，返回 {answer, tool_calls_log, history}。
@@ -85,6 +86,8 @@ async def run_agent(
     # system + 历史对话 + 本轮问题
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages.extend(history)
+    if memory_context:
+        messages.append(memory_context)
     messages.append({"role": "user", "content": question})
 
     tool_calls_log = []
@@ -148,6 +151,7 @@ async def run_agent_stream(
     question: str,
     user_id: Optional[str] = None,
     history: Optional[list] = None,
+    memory_context: Optional[dict] = None,
     max_turns: int = 10,
 ):
     """流式 Agent 循环。yield 事件 dict：
@@ -163,6 +167,8 @@ async def run_agent_stream(
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     messages.extend(history)
+    if memory_context:
+        messages.append(memory_context)
     messages.append({"role": "user", "content": question})
 
     tool_calls_log = []

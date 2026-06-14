@@ -245,6 +245,13 @@ SESSION_SUMMARY_ENABLED=true
 SESSION_SUMMARY_TRIGGER_MESSAGES=12
 SESSION_SUMMARY_RECENT_MESSAGES=6
 SESSION_SUMMARY_MAX_CHARS=1800
+
+# Long-term Memory 自动抽取默认关闭，开启后会在每轮 Agent 回答结束后尝试抽取长期记忆
+MEMORY_EXTRACTION_ENABLED=false
+MEMORY_EXTRACTION_MAX_MEMORIES=5
+MEMORY_EXTRACTION_MIN_CONFIDENCE=0.65
+MEMORY_RETRIEVAL_ENABLED=false
+MEMORY_RETRIEVAL_TOP_K=5
 ```
 
 可通过接口查看某个会话摘要：
@@ -333,6 +340,11 @@ VITE_API_BASE=http://localhost:8000
 | `scripts/extract_user.py` | 对指定用户做结构化记忆抽取 |
 | `scripts/show_memory.py` | 查看指定用户或会议的结构化记忆内容 |
 | `scripts/build_index.py` | 构建向量索引（BM25 + 向量混合检索前置步骤） |
+| `scripts/add_memory.py` | 手动新增 Long-term Memory，用于调试 |
+| `scripts/show_memories.py` | 查看或搜索 Long-term Memory |
+| `scripts/extract_memories.py` | 从指定会话最后一轮对话抽取 Long-term Memory |
+| `scripts/build_meeting_memories.py` | 从结构化会议摘要生成长期主题记忆 |
+| `scripts/clean_memories.py` | 清理过期和低可信 Long-term Memory |
 
 ```bash
 # 查看某用户所有会议摘要
@@ -343,6 +355,21 @@ python scripts/show_memory.py --note-id <note_id>
 
 # 只看待办事项
 python scripts/show_memory.py --user-id <user_id> --type action_items
+
+# 手动新增长期记忆
+python scripts/add_memory.py "用户偏好回答先给结论，再给步骤。" --user-id <user_id> --scope user --type preference --subject response_style
+
+# 搜索长期记忆
+python scripts/show_memories.py --user-id <user_id> --query "回答"
+
+# 对某个 session 最后一轮对话强制抽取长期记忆
+python scripts/extract_memories.py <session_id> --force
+
+# 从已抽取会议中生成长期主题记忆
+python scripts/build_meeting_memories.py --user-id <user_id>
+
+# 清理过期或低可信长期记忆
+python scripts/clean_memories.py --dry-run
 ```
 
 ---
@@ -402,5 +429,11 @@ MeetAgent/
 - [x] 阶段三：混合检索（BM25 + 向量检索 + RRF 融合）
 - [x] 阶段四：工具调用与 Agent 化（function calling + 6 个结构化记忆工具）
 - [x] 阶段五A：多轮对话（会话历史管理 + Session Memory 摘要压缩）
+- [x] 阶段五B-1：Long-term Memory 表与基础 CRUD
+- [x] 阶段五B-2：Stop Hook Extraction（对话结束后抽取长期记忆，默认关闭）
+- [x] 阶段五B-3：Memory Update（ADD / UPDATE / REPLACE / IGNORE）
+- [x] 阶段五B-4：Memory Retrieval（按需召回并注入 Agent，默认关闭）
+- [x] 阶段五B-5：会议结构化记忆沉淀为长期主题记忆
+- [x] 阶段五B-6：Trust Score 与清理脚本
 - [ ] 阶段五B：跨会议记忆追踪
 
