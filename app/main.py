@@ -87,12 +87,16 @@ def _clamp_max_turns(value: int) -> int:
 @app.post("/agent/qa", response_model=AgentResponse)
 async def agent_qa(req: AgentRequest):
     from app.agent import session as sess
-    session_id, history = sess.get_or_create(req.session_id, req.user_id)
+    session_id, history = sess.get_or_create_compacted(req.session_id, req.user_id)
     max_turns = _clamp_max_turns(req.max_turns)
     result = await run_agent(
         req.question, user_id=req.user_id, history=history, max_turns=max_turns
     )
     sess.append_turn(session_id, req.question, result["answer"], result["tool_calls_log"])
+    try:
+        await sess.maybe_update_summary(session_id)
+    except Exception:
+        pass
     return {
         "answer": result["answer"],
         "tool_calls_log": result["tool_calls_log"],
@@ -109,6 +113,15 @@ def get_session(session_id: str):
     return {"session_id": session_id, "messages": messages}
 
 
+@app.get("/agent/session/{session_id}/summary")
+def get_session_summary(session_id: str):
+    from app.agent import session as sess
+    summary = sess.get_summary(session_id)
+    if not summary:
+        raise HTTPException(status_code=404, detail="session summary 不存在")
+    return summary
+
+
 @app.post("/agent/qa/stream")
 async def agent_qa_stream(req: AgentRequest):
     """SSE 流式问答。事件格式：data: {json}\n\n
@@ -116,7 +129,7 @@ async def agent_qa_stream(req: AgentRequest):
     """
     from app.agent import session as sess
 
-    session_id, history = sess.get_or_create(req.session_id, req.user_id)
+    session_id, history = sess.get_or_create_compacted(req.session_id, req.user_id)
     max_turns = _clamp_max_turns(req.max_turns)
 
     async def event_gen():
@@ -144,6 +157,12 @@ async def agent_qa_stream(req: AgentRequest):
         answer = "".join(answer_parts)
         if answer:
             sess.append_turn(session_id, req.question, answer, tool_calls_log)
+            try:
+                updated = await sess.maybe_update_summary(session_id)
+                if updated:
+                    yield f"data: {json.dumps({'type': 'session_summary_updated'}, ensure_ascii=False)}\n\n"
+            except Exception:
+                pass
 
     return StreamingResponse(
         event_gen(),
@@ -188,7 +207,8 @@ def get_stats():
           (SELECT COUNT(*) FROM decisions) AS decisions,
           (SELECT COUNT(*) FROM risks) AS risks,
           (SELECT COUNT(*) FROM entities) AS entities,
-          (SELECT COUNT(*) FROM chat_sessions) AS chat_sessions
+          (SELECT COUNT(*) FROM chat_sessions) AS chat_sessions,
+          (SELECT COUNT(*) FROM session_summaries) AS session_summaries
         """
     ).fetchone()
     conn.close()

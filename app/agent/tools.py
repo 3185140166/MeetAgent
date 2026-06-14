@@ -196,6 +196,22 @@ TOOLS = [
                 "properties": {
                     "query": {"type": "string", "description": "联网搜索关键词或自然语言查询"},
                     "max_results": {"type": "integer", "description": "返回结果数量，默认5，最大10"},
+                    "topic": {
+                        "type": "string",
+                        "description": "搜索类型：general 普通搜索；news 新闻/实时更新搜索。查询最新信息时优先用 news。",
+                    },
+                    "time_range": {
+                        "type": "string",
+                        "description": "时间范围过滤：day / week / month / year。查询最新、今天、近期信息时必须填写。",
+                    },
+                    "start_date": {
+                        "type": "string",
+                        "description": "可选开始日期，格式 YYYY-MM-DD；需要精确日期范围时使用。",
+                    },
+                    "end_date": {
+                        "type": "string",
+                        "description": "可选结束日期，格式 YYYY-MM-DD；需要精确日期范围时使用。",
+                    },
                 },
                 "required": ["query"],
             },
@@ -259,6 +275,10 @@ def execute_tool(name: str, arguments: dict, user_id: Optional[str]) -> str:
         return _tool_web_search(
             query=arguments.get("query", ""),
             max_results=arguments.get("max_results"),
+            topic=arguments.get("topic"),
+            time_range=arguments.get("time_range"),
+            start_date=arguments.get("start_date"),
+            end_date=arguments.get("end_date"),
         )
     return f"未知工具: {name}"
 
@@ -287,10 +307,24 @@ def _fmt_meeting_ref(row: dict) -> str:
     return f"《{title}》{create_time}"
 
 
-def _tool_web_search(query: str, max_results=None) -> str:
+def _tool_web_search(
+    query: str,
+    max_results=None,
+    topic: Optional[str] = None,
+    time_range: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> str:
     try:
         from app.agent.web_search import format_web_results, search_web
-        results = search_web(query, max_results=max_results)
+        results = search_web(
+            query,
+            max_results=max_results,
+            topic=topic,
+            time_range=time_range,
+            start_date=start_date,
+            end_date=end_date,
+        )
         return format_web_results(results)
     except Exception as e:
         return f"联网搜索失败：{type(e).__name__}: {e}"

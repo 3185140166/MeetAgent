@@ -30,3 +30,11 @@ DASHSCOPE_EMBEDDING_MODEL: str = os.environ.get("DASHSCOPE_EMBEDDING_MODEL", "te
 TAVILY_API_KEY: str = os.environ.get("TAVILY_API_KEY", "")
 TAVILY_API_URL: str = os.environ.get("TAVILY_API_URL", "https://api.tavily.com/search")
 WEB_SEARCH_MAX_RESULTS: int = int(os.environ.get("WEB_SEARCH_MAX_RESULTS", "5"))
+WEB_SEARCH_DEFAULT_TOPIC: str = os.environ.get("WEB_SEARCH_DEFAULT_TOPIC", "general")
+WEB_SEARCH_DEFAULT_TIME_RANGE: str = os.environ.get("WEB_SEARCH_DEFAULT_TIME_RANGE", "")
+
+# Session Memory：长会话摘要压缩
+SESSION_SUMMARY_ENABLED: bool = os.environ.get("SESSION_SUMMARY_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+SESSION_SUMMARY_TRIGGER_MESSAGES: int = int(os.environ.get("SESSION_SUMMARY_TRIGGER_MESSAGES", "12"))
+SESSION_SUMMARY_RECENT_MESSAGES: int = int(os.environ.get("SESSION_SUMMARY_RECENT_MESSAGES", "6"))
+SESSION_SUMMARY_MAX_CHARS: int = int(os.environ.get("SESSION_SUMMARY_MAX_CHARS", "1800"))

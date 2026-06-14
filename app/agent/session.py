@@ -3,9 +3,17 @@
 
 import uuid
 import json
+import asyncio
 from datetime import datetime
 from typing import Optional
 
+from app.config import (
+    SESSION_SUMMARY_ENABLED,
+    SESSION_SUMMARY_MAX_CHARS,
+    SESSION_SUMMARY_RECENT_MESSAGES,
+    SESSION_SUMMARY_TRIGGER_MESSAGES,
+)
+from app.llm.client import chat
 from app.storage.db import get_connection
 
 
@@ -47,6 +55,63 @@ def get_or_create(session_id: Optional[str], user_id: Optional[str]) -> tuple[st
     return new_id, []
 
 
+def _summary_message(summary: str) -> dict:
+    return {
+        "role": "user",
+        "content": (
+            "<session_memory>\n"
+            "以下是当前会话的压缩摘要，不是用户当前输入。"
+            "它只用于帮助你理解本会话前文；如果与用户当前问题冲突，以当前问题为准。\n"
+            f"{summary}\n"
+            "</session_memory>"
+        ),
+    }
+
+
+def get_compacted_history(session_id: str, recent_limit: Optional[int] = None) -> list:
+    """返回用于 Agent 的压缩历史：会话摘要 + 最近若干条原始消息。"""
+    if recent_limit is None:
+        recent_limit = SESSION_SUMMARY_RECENT_MESSAGES
+
+    conn = get_connection()
+    summary_row = conn.execute(
+        "SELECT summary FROM session_summaries WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    rows = conn.execute(
+        """
+        SELECT role, content FROM (
+          SELECT id, role, content
+          FROM chat_messages
+          WHERE session_id = ?
+          ORDER BY id DESC
+          LIMIT ?
+        ) recent
+        ORDER BY id ASC
+        """,
+        (session_id, recent_limit),
+    ).fetchall()
+    conn.close()
+
+    history = []
+    if summary_row and summary_row["summary"]:
+        history.append(_summary_message(summary_row["summary"]))
+    history.extend({"role": r["role"], "content": r["content"]} for r in rows)
+    return history
+
+
+def get_or_create_compacted(
+    session_id: Optional[str],
+    user_id: Optional[str],
+    recent_limit: Optional[int] = None,
+) -> tuple[str, list]:
+    """返回 (session_id, compacted_history)。新 session 返回空历史。"""
+    sid, history = get_or_create(session_id, user_id)
+    if not session_id or not SESSION_SUMMARY_ENABLED:
+        return sid, history
+    return sid, get_compacted_history(sid, recent_limit=recent_limit)
+
+
 def append_turn(
     session_id: str,
     question: str,
@@ -73,6 +138,103 @@ def append_turn(
     )
     conn.commit()
     conn.close()
+
+
+def _load_messages_for_summary(session_id: str) -> tuple[Optional[str], list[dict], int]:
+    conn = get_connection()
+    session = conn.execute(
+        "SELECT user_id FROM chat_sessions WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    rows = conn.execute(
+        "SELECT role, content FROM chat_messages WHERE session_id = ? ORDER BY id",
+        (session_id,),
+    ).fetchall()
+    conn.close()
+    user_id = session["user_id"] if session else None
+    messages = [{"role": r["role"], "content": r["content"]} for r in rows]
+    return user_id, messages, len(rows)
+
+
+def _render_transcript(messages: list[dict]) -> str:
+    parts = []
+    for m in messages:
+        role = "用户" if m["role"] == "user" else "助手"
+        content = (m["content"] or "").strip()
+        if content:
+            parts.append(f"{role}：{content}")
+    return "\n\n".join(parts)
+
+
+async def build_session_summary(messages: list[dict]) -> str:
+    transcript = _render_transcript(messages)
+    max_chars = max(400, SESSION_SUMMARY_MAX_CHARS)
+    prompt = [
+        {
+            "role": "system",
+            "content": (
+                "你是会话摘要助手。请把当前对话压缩成供后续 Agent 使用的 session memory。"
+                "只保留本会话内仍然有用的信息：用户目标、已确认事实、关键约束、重要结论、"
+                "未完成事项、最近上下文。不要加入臆测，不要写成命令。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"请用不超过 {max_chars} 个汉字总结下面的会话。\n\n"
+                "输出要求：\n"
+                "1. 使用简洁条目。\n"
+                "2. 写事实陈述，不要写成对助手的命令。\n"
+                "3. 如果没有长期有用的信息，也要保留当前会话的任务进展。\n\n"
+                f"会话记录：\n{transcript}"
+            ),
+        },
+    ]
+    summary = (await chat(prompt, temperature=0.0)).strip()
+    return summary[:max_chars]
+
+
+def _save_summary(session_id: str, user_id: Optional[str], summary: str, message_count: int) -> None:
+    conn = get_connection()
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO session_summaries
+          (session_id, user_id, summary, message_count, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (session_id, user_id, summary, message_count, _now()),
+    )
+    conn.commit()
+    conn.close()
+
+
+async def maybe_update_summary(session_id: str, force: bool = False) -> bool:
+    """按阈值更新会话摘要。成功更新返回 True。失败时抛出异常给调用方决定是否忽略。"""
+    if not SESSION_SUMMARY_ENABLED:
+        return False
+
+    user_id, messages, message_count = _load_messages_for_summary(session_id)
+    if not force and message_count < SESSION_SUMMARY_TRIGGER_MESSAGES:
+        return False
+
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT message_count FROM session_summaries WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    conn.close()
+    if not force and row and row["message_count"] >= message_count:
+        return False
+
+    summary = await build_session_summary(messages)
+    if not summary:
+        return False
+    _save_summary(session_id, user_id, summary, message_count)
+    return True
+
+
+def maybe_update_summary_sync(session_id: str, force: bool = False) -> bool:
+    return asyncio.run(maybe_update_summary(session_id, force=force))
 
 
 def list_sessions(limit: int = 50, offset: int = 0, user_id: Optional[str] = None) -> list:
@@ -130,8 +292,20 @@ def get_history(session_id: str) -> list:
     return result
 
 
+def get_summary(session_id: str) -> Optional[dict]:
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT session_id, user_id, summary, message_count, updated_at "
+        "FROM session_summaries WHERE session_id = ?",
+        (session_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 def clear(session_id: str):
     conn = get_connection()
+    conn.execute("DELETE FROM session_summaries WHERE session_id = ?", (session_id,))
     conn.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
     conn.execute("DELETE FROM chat_sessions WHERE session_id = ?", (session_id,))
     conn.commit()

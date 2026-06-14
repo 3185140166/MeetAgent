@@ -58,6 +58,8 @@ EXTRACT_WINDOW_CHARS=6000             # 结构化抽取每窗口字数
 EXTRACT_CONCURRENCY=5                 # 抽取并发数
 TAVILY_API_KEY=your_tavily_key_here   # 可选，启用联网搜索工具
 WEB_SEARCH_MAX_RESULTS=5              # 联网搜索默认结果数
+WEB_SEARCH_DEFAULT_TOPIC=general      # general / news
+WEB_SEARCH_DEFAULT_TIME_RANGE=        # day / week / month / year，留空表示不过滤时间
 ```
 
 ### 3. 导入会议数据
@@ -190,7 +192,11 @@ Agent 可调用的工具：
 TAVILY_API_KEY=your_tavily_key_here
 TAVILY_API_URL=https://api.tavily.com/search
 WEB_SEARCH_MAX_RESULTS=5
+WEB_SEARCH_DEFAULT_TOPIC=general
+WEB_SEARCH_DEFAULT_TIME_RANGE=
 ```
+
+当用户询问“最新、今天、近期、实时、新闻”类外部信息时，Agent 会要求 `web_search` 使用 Tavily 的 `topic="news"`，并传入 `time_range`（如 `day`、`week`、`month`）或精确日期范围；回答外部搜索信息时必须列出 URL 来源。
 
 **启动 HTTP 服务：**
 
@@ -232,6 +238,21 @@ http://localhost:5173/admin
 
 管理页可查看全局数据、用户列表、用户会议列表、会话列表和会话消息。聊天会话会持久化到 SQLite 的 `chat_sessions` / `chat_messages` 表，不再按固定时间自动清理；后续如需“短期记忆 / 长期记忆”，应单独生成结构化记忆产物，而不是依赖聊天 session 过期逻辑。
 
+当前已支持 Session Memory：当同一会话消息数达到阈值后，系统会自动把会话压缩成 `session_summaries`，后续问答使用“会话摘要 + 最近消息”作为上下文，避免长会话反复塞入全部历史。相关配置：
+
+```env
+SESSION_SUMMARY_ENABLED=true
+SESSION_SUMMARY_TRIGGER_MESSAGES=12
+SESSION_SUMMARY_RECENT_MESSAGES=6
+SESSION_SUMMARY_MAX_CHARS=1800
+```
+
+可通过接口查看某个会话摘要：
+
+```text
+GET /agent/session/{session_id}/summary
+```
+
 打开前端后，左侧“用户 ID”可以填写要查询的用户。测试数据中可先使用：
 
 ```text
@@ -256,6 +277,7 @@ VITE_API_BASE=http://localhost:8000
 | GET  | `/users` | 用户数据概览列表 |
 | GET  | `/users/{user_id}/meetings` | 指定用户的会议列表 |
 | GET  | `/sessions` | 会话列表，用于管理页查看聊天记录 |
+| GET  | `/agent/session/{session_id}/summary` | 查看某个会话的 Session Memory 摘要 |
 | GET  | `/meetings` | 会议列表，支持 `?user_id=` 过滤 |
 | GET  | `/meetings/{note_id}` | 单场会议详情 |
 | GET  | `/chunks/{chunk_id}` | 单个文本片段 |
@@ -379,6 +401,6 @@ MeetAgent/
 - [x] 阶段二：结构化会议记忆（摘要、待办、决策、风险、实体 map-reduce 抽取）
 - [x] 阶段三：混合检索（BM25 + 向量检索 + RRF 融合）
 - [x] 阶段四：工具调用与 Agent 化（function calling + 6 个结构化记忆工具）
-- [x] 阶段五A：多轮对话（会话历史管理）
+- [x] 阶段五A：多轮对话（会话历史管理 + Session Memory 摘要压缩）
 - [ ] 阶段五B：跨会议记忆追踪
 

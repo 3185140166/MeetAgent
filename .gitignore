@@ -11,6 +11,11 @@ data/*.db
 # 向量索引（本地生成，不提交）
 data/chroma/
 
+# Agent Memory 运行时产物（本地生成，不提交）
+data/memory/
+memory_store/
+.memory/
+
 # 本地模型文件（体积大，不提交）
 models/
 
@@ -40,4 +45,6 @@ _*.txt
 
 # 本地私有文档（不公开）
 docs/architecture_deploy.md
+docs/memory.pdf
+docs/memory_pdf_detailed_reading.md
 CURRENT_PROJECT_STATE.md

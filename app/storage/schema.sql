@@ -104,3 +104,14 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id);
+
+-- ========== Session Memory：会话摘要 ==========
+
+CREATE TABLE IF NOT EXISTS session_summaries (
+  session_id TEXT PRIMARY KEY,
+  user_id TEXT,
+  summary TEXT NOT NULL,
+  message_count INTEGER DEFAULT 0,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(session_id) REFERENCES chat_sessions(session_id)
+);
