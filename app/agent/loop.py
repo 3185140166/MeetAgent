@@ -4,7 +4,7 @@
 import json
 from typing import Optional
 
-from app.llm.client import chat_with_tools, chat_stream
+from app.llm.client import chat_with_tools
 from app.agent.tools import TOOLS, execute_tool
 
 _MAX_TOOL_FAILURES = 2
@@ -208,9 +208,9 @@ async def run_agent_stream(
                     "content": result,
                 })
         else:
-            # 最终回答：用流式接口逐 token 输出
-            async for token in chat_stream(messages):
-                yield {"type": "token", "content": token}
+            content = msg.get("content") or ""
+            if content:
+                yield {"type": "token", "content": content}
             yield {"type": "done", "tool_calls_log": tool_calls_log}
             return
 
