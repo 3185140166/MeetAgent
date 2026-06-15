@@ -186,3 +186,16 @@ CREATE TABLE IF NOT EXISTS agent_task_steps (
 CREATE INDEX IF NOT EXISTS idx_agent_tasks_status ON agent_tasks(status, updated_at);
 CREATE INDEX IF NOT EXISTS idx_agent_tasks_user ON agent_tasks(user_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_agent_task_steps_task ON agent_task_steps(task_id, step_index);
+
+CREATE TABLE IF NOT EXISTS agent_task_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id TEXT NOT NULL,
+  step_id TEXT,
+  event_type TEXT NOT NULL,
+  payload TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(task_id) REFERENCES agent_tasks(task_id),
+  FOREIGN KEY(step_id) REFERENCES agent_task_steps(step_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_task_events_task ON agent_task_events(task_id, id);

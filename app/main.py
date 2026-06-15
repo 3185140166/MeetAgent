@@ -344,6 +344,37 @@ def get_agent_task_steps(task_id: str):
     return list_steps(task_id)
 
 
+@app.get("/agent/tasks/{task_id}/events")
+def get_agent_task_events(task_id: str, after_id: int = 0, limit: int = 200):
+    from app.agent.tasks import get_task, list_events
+    if not get_task(task_id):
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return list_events(task_id, after_id=after_id, limit=limit)
+
+
+@app.get("/agent/tasks/{task_id}/events/stream")
+async def stream_agent_task_events(task_id: str, after_id: int = 0):
+    from app.agent.tasks import get_task, list_events
+
+    if not get_task(task_id):
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    async def event_gen():
+        last_id = after_id
+        while True:
+            task = get_task(task_id)
+            events = list_events(task_id, after_id=last_id, limit=100)
+            for event in events:
+                last_id = max(last_id, int(event["id"]))
+                yield f"data: {json.dumps({'type': 'event', 'event': event}, ensure_ascii=False)}\n\n"
+            if task and task["status"] in ("completed", "failed", "canceled"):
+                yield f"data: {json.dumps({'type': 'done', 'task': task}, ensure_ascii=False)}\n\n"
+                return
+            await asyncio.sleep(1)
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
+
+
 @app.post("/agent/tasks/{task_id}/cancel")
 def cancel_agent_task(task_id: str):
     from app.agent.tasks import cancel_task
@@ -351,6 +382,21 @@ def cancel_agent_task(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
     return task
+
+
+@app.post("/agent/tasks/{task_id}/retry")
+def retry_agent_task(task_id: str):
+    from app.agent.tasks import retry_task
+    task = retry_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return task
+
+
+@app.post("/agent/tasks/recover")
+def recover_agent_tasks(timeout_seconds: int = 120):
+    from app.agent.tasks import recover_interrupted_tasks
+    return {"recovered": recover_interrupted_tasks(timeout_seconds=timeout_seconds)}
 
 
 @app.post("/qa", response_model=QAResponse)

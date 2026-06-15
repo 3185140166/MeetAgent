@@ -99,6 +99,18 @@ export function getAgentTaskSteps(taskId) {
   return getJson(`/agent/tasks/${encodeURIComponent(taskId)}/steps`)
 }
 
+export function getAgentTaskEvents(taskId, afterId = 0) {
+  const params = new URLSearchParams()
+  if (afterId) params.set('after_id', String(afterId))
+  return getJson(`/agent/tasks/${encodeURIComponent(taskId)}/events?${params.toString()}`)
+}
+
+export function openAgentTaskEventStream(taskId, afterId = 0) {
+  const params = new URLSearchParams()
+  if (afterId) params.set('after_id', String(afterId))
+  return new EventSource(`${API_BASE}/agent/tasks/${encodeURIComponent(taskId)}/events/stream?${params.toString()}`)
+}
+
 export async function createAgentTask({ question, userId, sessionId = null, taskType = 'topic_analysis' }) {
   const res = await fetch(`${API_BASE}/agent/tasks`, {
     method: 'POST',
@@ -121,5 +133,23 @@ export async function cancelAgentTask(taskId) {
     cache: 'no-store',
   })
   if (!res.ok) throw new Error(`取消任务失败：HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function retryAgentTask(taskId) {
+  const res = await fetch(`${API_BASE}/agent/tasks/${encodeURIComponent(taskId)}/retry`, {
+    method: 'POST',
+    cache: 'no-store',
+  })
+  if (!res.ok) throw new Error(`重试任务失败：HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function recoverAgentTasks() {
+  const res = await fetch(`${API_BASE}/agent/tasks/recover`, {
+    method: 'POST',
+    cache: 'no-store',
+  })
+  if (!res.ok) throw new Error(`恢复任务失败：HTTP ${res.status}`)
   return res.json()
 }

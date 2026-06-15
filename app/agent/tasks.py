@@ -17,6 +17,7 @@ TASK_STATUSES = {
     "canceled",
 }
 STEP_STATUSES = {"pending", "running", "completed", "failed", "skipped"}
+TASK_TYPES = {"topic_analysis", "weekly_report", "memory_build"}
 
 
 def _now() -> str:
@@ -27,14 +28,25 @@ def _json(value) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def _task_plan(question: str, topic: str) -> tuple[str, list[dict]]:
-    plan = [
-        {"title": "追踪主题历史", "tool_name": "get_topic_history", "tool_args": {"topic": topic, "limit": 20}},
-        {"title": "汇总相关决策", "tool_name": "get_decisions", "tool_args": {"keyword": topic}},
-        {"title": "汇总相关风险", "tool_name": "get_risks", "tool_args": {"keyword": topic}},
-        {"title": "汇总相关待办", "tool_name": "get_action_items", "tool_args": {"keyword": topic}},
-        {"title": "生成综合分析", "tool_name": "synthesize", "tool_args": {"question": question}},
-    ]
+def _task_plan(question: str, topic: str, task_type: str) -> tuple[str, list[dict]]:
+    if task_type == "weekly_report":
+        plan = [
+            {"title": "生成周报素材", "tool_name": "generate_weekly_report", "tool_args": {}},
+            {"title": "生成周报结论", "tool_name": "synthesize", "tool_args": {"question": question}},
+        ]
+    elif task_type == "memory_build":
+        plan = [
+            {"title": "构建长期主题记忆", "tool_name": "build_meeting_memories", "tool_args": {}},
+            {"title": "生成执行摘要", "tool_name": "synthesize", "tool_args": {"question": question}},
+        ]
+    else:
+        plan = [
+            {"title": "追踪主题历史", "tool_name": "get_topic_history", "tool_args": {"topic": topic, "limit": 20}},
+            {"title": "汇总相关决策", "tool_name": "get_decisions", "tool_args": {"keyword": topic}},
+            {"title": "汇总相关风险", "tool_name": "get_risks", "tool_args": {"keyword": topic}},
+            {"title": "汇总相关待办", "tool_name": "get_action_items", "tool_args": {"keyword": topic}},
+            {"title": "生成综合分析", "tool_name": "synthesize", "tool_args": {"question": question}},
+        ]
     return _json(plan), plan
 
 
@@ -54,13 +66,13 @@ def create_task(
     question = (question or "").strip()
     if not question:
         raise ValueError("question 不能为空")
-    if task_type != "topic_analysis":
-        raise ValueError("MVP 阶段只支持 task_type=topic_analysis")
+    if task_type not in TASK_TYPES:
+        raise ValueError(f"task_type 只支持: {', '.join(sorted(TASK_TYPES))}")
 
     task_id = str(uuid.uuid4())
     now = _now()
     topic = infer_topic(question)
-    plan_json, steps = _task_plan(question, topic)
+    plan_json, steps = _task_plan(question, topic, task_type)
 
     conn = get_connection()
     conn.execute(
@@ -92,6 +104,7 @@ def create_task(
                 _json(step.get("tool_args", {})),
             ),
         )
+    add_event(task_id, "task_created", {"task_type": task_type, "step_count": len(steps)}, conn=conn)
     conn.commit()
     row = get_task(task_id, conn=conn)
     conn.close()
@@ -150,6 +163,57 @@ def list_steps(task_id: str) -> list[dict]:
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def add_event(
+    task_id: str,
+    event_type: str,
+    payload=None,
+    step_id: Optional[str] = None,
+    conn=None,
+) -> dict:
+    own = conn is None
+    conn = conn or get_connection()
+    conn.execute(
+        """
+        INSERT INTO agent_task_events (task_id, step_id, event_type, payload, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (task_id, step_id, event_type, _json(payload or {}), _now()),
+    )
+    row = conn.execute(
+        "SELECT * FROM agent_task_events WHERE id = last_insert_rowid()"
+    ).fetchone()
+    if own:
+        conn.commit()
+        conn.close()
+    return dict(row)
+
+
+def list_events(task_id: str, after_id: int = 0, limit: int = 200) -> list[dict]:
+    limit = min(max(int(limit or 200), 1), 500)
+    after_id = max(int(after_id or 0), 0)
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT *
+        FROM agent_task_events
+        WHERE task_id = ? AND id > ?
+        ORDER BY id ASC
+        LIMIT ?
+        """,
+        (task_id, after_id, limit),
+    ).fetchall()
+    conn.close()
+    result = []
+    for row in rows:
+        item = dict(row)
+        try:
+            item["payload"] = json.loads(item.get("payload") or "{}")
+        except Exception:
+            item["payload"] = {}
+        result.append(item)
+    return result
 
 
 def update_task(task_id: str, **fields) -> Optional[dict]:
@@ -241,6 +305,7 @@ def mark_stale_running_as_interrupted(timeout_seconds: int = 120) -> int:
             """,
             (row["task_id"],),
         )
+        add_event(row["task_id"], "task_interrupted", {"reason": "heartbeat_timeout"}, conn=conn)
     conn.commit()
     count = len(rows)
     conn.close()
@@ -248,4 +313,68 @@ def mark_stale_running_as_interrupted(timeout_seconds: int = 120) -> int:
 
 
 def cancel_task(task_id: str) -> Optional[dict]:
-    return update_task(task_id, status="canceled", finished_at=_now())
+    task = update_task(task_id, status="canceled", finished_at=_now())
+    if task:
+        add_event(task_id, "task_canceled", {})
+    return task
+
+
+def retry_task(task_id: str) -> Optional[dict]:
+    task = get_task(task_id)
+    if not task:
+        return None
+    if task["status"] not in {"failed", "interrupted", "canceled"}:
+        return task
+    conn = get_connection()
+    conn.execute(
+        """
+        UPDATE agent_task_steps
+        SET status = 'pending', error = '', started_at = NULL, finished_at = NULL
+        WHERE task_id = ? AND status IN ('failed', 'running', 'pending')
+        """,
+        (task_id,),
+    )
+    conn.execute(
+        """
+        UPDATE agent_tasks
+        SET status = 'pending', error = '', final_answer = NULL,
+            finished_at = NULL, updated_at = ?, heartbeat_at = NULL
+        WHERE task_id = ?
+        """,
+        (_now(), task_id),
+    )
+    add_event(task_id, "task_retried", {"from_status": task["status"]}, conn=conn)
+    conn.commit()
+    row = get_task(task_id, conn=conn)
+    conn.close()
+    return row
+
+
+def recover_interrupted_tasks(timeout_seconds: int = 120) -> int:
+    interrupted = mark_stale_running_as_interrupted(timeout_seconds=timeout_seconds)
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT task_id FROM agent_tasks WHERE status = 'interrupted'"
+    ).fetchall()
+    for row in rows:
+        conn.execute(
+            """
+            UPDATE agent_tasks
+            SET status = 'pending', updated_at = ?, heartbeat_at = NULL
+            WHERE task_id = ?
+            """,
+            (_now(), row["task_id"]),
+        )
+        conn.execute(
+            """
+            UPDATE agent_task_steps
+            SET status = 'pending', error = ''
+            WHERE task_id = ? AND status = 'running'
+            """,
+            (row["task_id"],),
+        )
+        add_event(row["task_id"], "task_recovered", {}, conn=conn)
+    conn.commit()
+    recovered = len(rows)
+    conn.close()
+    return interrupted + recovered

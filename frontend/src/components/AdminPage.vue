@@ -176,9 +176,17 @@
           <button @click="loadTasks" :disabled="loadingTasks">
             {{ loadingTasks ? '刷新中' : '刷新' }}
           </button>
+          <button @click="recoverTasks" :disabled="recoveringTasks">
+            {{ recoveringTasks ? '恢复中' : '恢复' }}
+          </button>
         </div>
 
         <div class="task-create">
+          <select v-model="taskType">
+            <option value="topic_analysis">主题分析</option>
+            <option value="weekly_report">周报素材</option>
+            <option value="memory_build">构建长期记忆</option>
+          </select>
           <input
             v-model="taskQuestion"
             placeholder="创建跨会议主题分析任务"
@@ -222,6 +230,12 @@
           >
             取消任务
           </button>
+          <button
+            v-if="selectedTask && ['failed', 'interrupted', 'canceled'].includes(selectedTask.status)"
+            @click="retryTask"
+          >
+            重试任务
+          </button>
         </div>
 
         <div v-if="!selectedTaskId" class="empty">
@@ -243,6 +257,16 @@
               </div>
               <p v-if="step.result">{{ step.result }}</p>
               <p v-if="step.error" class="step-error">{{ step.error }}</p>
+            </div>
+          </div>
+          <div class="event-list">
+            <h3>任务事件</h3>
+            <div v-if="taskEvents.length === 0" class="empty compact">暂无事件。</div>
+            <div v-for="event in taskEvents" :key="event.id" class="event-row">
+              <span>{{ event.id }}</span>
+              <strong>{{ event.event_type }}</strong>
+              <em>{{ event.created_at }}</em>
+              <pre>{{ formatEventPayload(event.payload) }}</pre>
             </div>
           </div>
         </div>
@@ -296,10 +320,11 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   cancelAgentTask,
   createAgentTask,
+  getAgentTaskEvents,
   deleteSession,
   getAgentTaskSteps,
   getAgentTasks,
@@ -310,6 +335,9 @@ import {
   getStats,
   getUsers,
   getUserMeetings,
+  openAgentTaskEventStream,
+  recoverAgentTasks,
+  retryAgentTask,
 } from '../api/agent.js'
 
 const stats = ref(null)
@@ -321,6 +349,7 @@ const sessionSummary = ref(null)
 const memories = ref([])
 const tasks = ref([])
 const taskSteps = ref([])
+const taskEvents = ref([])
 const selectedTask = ref(null)
 const selectedUserId = ref('')
 const selectedSessionId = ref('')
@@ -333,10 +362,14 @@ const loadingMemories = ref(false)
 const loadingTasks = ref(false)
 const deletingSession = ref(false)
 const creatingTask = ref(false)
+const recoveringTasks = ref(false)
 const memoryQuery = ref('')
 const includeInactiveMemories = ref(false)
 const taskQuestion = ref('')
+const taskType = ref('topic_analysis')
 const error = ref('')
+
+let taskEventSource = null
 
 const statItems = computed(() => {
   const s = stats.value || {}
@@ -431,11 +464,15 @@ async function loadTasks() {
 }
 
 async function selectTask(taskId) {
+  closeTaskEventStream()
   selectedTaskId.value = taskId
   selectedTask.value = tasks.value.find((t) => t.task_id === taskId) || null
   taskSteps.value = []
+  taskEvents.value = []
   try {
     taskSteps.value = await getAgentTaskSteps(taskId)
+    taskEvents.value = await getAgentTaskEvents(taskId)
+    openTaskEventStream(taskId)
   } catch (e) {
     error.value = `加载任务步骤失败：${e.message}`
   }
@@ -450,17 +487,91 @@ async function createTask() {
     const task = await createAgentTask({
       question,
       userId: selectedUserId.value,
+      taskType: taskType.value,
     })
     taskQuestion.value = ''
     tasks.value = [task, ...tasks.value]
     selectedTaskId.value = task.task_id
     selectedTask.value = task
     taskSteps.value = await getAgentTaskSteps(task.task_id)
+    taskEvents.value = await getAgentTaskEvents(task.task_id)
+    openTaskEventStream(task.task_id)
     await refreshStats()
   } catch (e) {
     error.value = e.message
   } finally {
     creatingTask.value = false
+  }
+}
+
+async function retryTask() {
+  if (!selectedTaskId.value) return
+  try {
+    selectedTask.value = await retryAgentTask(selectedTaskId.value)
+    await loadTasks()
+    await selectTask(selectedTaskId.value)
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+async function recoverTasks() {
+  recoveringTasks.value = true
+  try {
+    await recoverAgentTasks()
+    await loadTasks()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    recoveringTasks.value = false
+  }
+}
+
+function formatEventPayload(payload) {
+  if (!payload || Object.keys(payload).length === 0) return ''
+  return JSON.stringify(payload, null, 2)
+}
+
+function closeTaskEventStream() {
+  if (taskEventSource) {
+    taskEventSource.close()
+    taskEventSource = null
+  }
+}
+
+function openTaskEventStream(taskId) {
+  closeTaskEventStream()
+  const lastId = taskEvents.value.reduce((max, event) => Math.max(max, Number(event.id || 0)), 0)
+  taskEventSource = openAgentTaskEventStream(taskId, lastId)
+  taskEventSource.onmessage = async (message) => {
+    try {
+      const data = JSON.parse(message.data)
+      if (data.type === 'event' && data.event) {
+        if (!taskEvents.value.find((event) => event.id === data.event.id)) {
+          taskEvents.value.push(data.event)
+        }
+        await Promise.allSettled([
+          getAgentTaskSteps(taskId).then((steps) => {
+            taskSteps.value = steps
+          }),
+          loadTasks(),
+        ])
+      } else if (data.type === 'done') {
+        selectedTask.value = data.task
+        await Promise.allSettled([
+          getAgentTaskSteps(taskId).then((steps) => {
+            taskSteps.value = steps
+          }),
+          loadTasks(),
+        ])
+        closeTaskEventStream()
+      }
+    } catch {
+      // Ignore malformed SSE payloads; the next event or refresh repairs state.
+    }
+  }
+  taskEventSource.onerror = () => {
+    closeTaskEventStream()
   }
 }
 
@@ -555,6 +666,7 @@ function sessionTitle(session) {
 }
 
 onMounted(loadAll)
+onBeforeUnmount(closeTaskEventStream)
 </script>
 
 <style scoped>
@@ -788,6 +900,14 @@ button:disabled {
   border-bottom: 1px solid #e2e8f0;
 }
 
+.task-create select {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 13px;
+  background: #fff;
+}
+
 .task-create input {
   flex: 1;
   min-width: 0;
@@ -917,6 +1037,46 @@ button:disabled {
 
 .step-error {
   color: #b91c1c !important;
+}
+
+.event-list {
+  border-top: 1px solid #e2e8f0;
+}
+
+.event-list h3 {
+  font-size: 14px;
+  padding: 12px 14px 0;
+}
+
+.event-row {
+  padding: 10px 14px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.event-row span,
+.event-row em {
+  color: #64748b;
+  font-size: 12px;
+  font-style: normal;
+  margin-right: 8px;
+}
+
+.event-row strong {
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.event-row pre {
+  margin-top: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #334155;
+  font-size: 12px;
+}
+
+.compact {
+  padding-top: 10px;
+  padding-bottom: 10px;
 }
 
 .session-summary {
