@@ -37,17 +37,27 @@ export async function* streamChat({ question, userId, sessionId, maxTurns = 10 }
 }
 
 export async function getSessionMessages(sessionId) {
-  const res = await fetch(`${API_BASE}/agent/session/${sessionId}`)
+  const res = await fetch(`${API_BASE}/agent/session/${sessionId}`, { cache: 'no-store' })
+  if (!res.ok) return null
+  return res.json()
+}
+
+export async function getSessionSummary(sessionId) {
+  const res = await fetch(`${API_BASE}/agent/session/${sessionId}/summary`, { cache: 'no-store' })
   if (!res.ok) return null
   return res.json()
 }
 
 export async function deleteSession(sessionId) {
-  await fetch(`${API_BASE}/agent/session/${sessionId}`, { method: 'DELETE' })
+  const res = await fetch(`${API_BASE}/agent/session/${sessionId}`, {
+    method: 'DELETE',
+    cache: 'no-store',
+  })
+  if (!res.ok) throw new Error(`删除失败：HTTP ${res.status}`)
 }
 
 async function getJson(path) {
-  const res = await fetch(`${API_BASE}${path}`)
+  const res = await fetch(`${API_BASE}${path}`, { cache: 'no-store' })
   if (!res.ok) throw new Error(`请求失败：HTTP ${res.status}`)
   return res.json()
 }
@@ -66,4 +76,50 @@ export function getUserMeetings(userId) {
 
 export function getSessions() {
   return getJson('/sessions')
+}
+
+export function getMemories({ userId, query = '', includeInactive = false, limit = 50 } = {}) {
+  const params = new URLSearchParams()
+  if (userId) params.set('user_id', userId)
+  if (query) params.set('query', query)
+  if (includeInactive) params.set('include_inactive', 'true')
+  params.set('limit', String(limit))
+  return getJson(`/memories?${params.toString()}`)
+}
+
+export function getAgentTasks({ userId, status = '', limit = 50 } = {}) {
+  const params = new URLSearchParams()
+  if (userId) params.set('user_id', userId)
+  if (status) params.set('status', status)
+  params.set('limit', String(limit))
+  return getJson(`/agent/tasks?${params.toString()}`)
+}
+
+export function getAgentTaskSteps(taskId) {
+  return getJson(`/agent/tasks/${encodeURIComponent(taskId)}/steps`)
+}
+
+export async function createAgentTask({ question, userId, sessionId = null, taskType = 'topic_analysis' }) {
+  const res = await fetch(`${API_BASE}/agent/tasks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    cache: 'no-store',
+    body: JSON.stringify({
+      question,
+      user_id: userId || null,
+      session_id: sessionId || null,
+      task_type: taskType,
+    }),
+  })
+  if (!res.ok) throw new Error(`创建任务失败：HTTP ${res.status}`)
+  return res.json()
+}
+
+export async function cancelAgentTask(taskId) {
+  const res = await fetch(`${API_BASE}/agent/tasks/${encodeURIComponent(taskId)}/cancel`, {
+    method: 'POST',
+    cache: 'no-store',
+  })
+  if (!res.ok) throw new Error(`取消任务失败：HTTP ${res.status}`)
+  return res.json()
 }

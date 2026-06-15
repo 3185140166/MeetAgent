@@ -146,3 +146,43 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
   subject,
   content
 );
+
+-- ========== Agent Task：复杂任务 / 长任务 ==========
+
+CREATE TABLE IF NOT EXISTS agent_tasks (
+  task_id TEXT PRIMARY KEY,
+  session_id TEXT,
+  user_id TEXT,
+  question TEXT NOT NULL,
+  task_type TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  plan TEXT,
+  final_answer TEXT,
+  error TEXT,
+  current_step_index INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  started_at TEXT,
+  finished_at TEXT,
+  heartbeat_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS agent_task_steps (
+  step_id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  step_index INTEGER NOT NULL,
+  title TEXT,
+  description TEXT,
+  tool_name TEXT,
+  tool_args TEXT,
+  status TEXT NOT NULL DEFAULT 'pending',
+  result TEXT,
+  error TEXT,
+  started_at TEXT,
+  finished_at TEXT,
+  FOREIGN KEY(task_id) REFERENCES agent_tasks(task_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_tasks_status ON agent_tasks(status, updated_at);
+CREATE INDEX IF NOT EXISTS idx_agent_tasks_user ON agent_tasks(user_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_agent_task_steps_task ON agent_task_steps(task_id, step_index);

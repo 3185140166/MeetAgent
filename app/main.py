@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import asyncio
 import json
 from typing import Optional
 from fastapi import FastAPI, HTTPException
@@ -24,6 +25,14 @@ app.add_middleware(
 @app.on_event("startup")
 def startup():
     init_db()
+    from app.agent.task_worker import start_worker
+    start_worker()
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    from app.agent.task_worker import stop_worker
+    await stop_worker()
 
 
 # ---------- 请求 / 响应模型 ----------
@@ -68,6 +77,13 @@ class AgentResponse(BaseModel):
     answer: str
     tool_calls_log: list[ToolCallItem]
     session_id: str
+
+
+class AgentTaskRequest(BaseModel):
+    question: str
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
+    task_type: str = "topic_analysis"
 
 
 def _vector_index_count() -> int:
@@ -118,6 +134,31 @@ async def _run_memory_stop_hooks(
     return result
 
 
+def _schedule_memory_stop_hooks(
+    session_id: str,
+    user_id: Optional[str],
+    question: str,
+    answer: str,
+    tool_calls_log: list,
+) -> None:
+    """Run memory hooks in the background so chat responses are not blocked."""
+    task = asyncio.create_task(_run_memory_stop_hooks(
+        session_id=session_id,
+        user_id=user_id,
+        question=question,
+        answer=answer,
+        tool_calls_log=tool_calls_log,
+    ))
+
+    def _consume_result(done_task: asyncio.Task) -> None:
+        try:
+            done_task.result()
+        except Exception:
+            pass
+
+    task.add_done_callback(_consume_result)
+
+
 # ---------- 路由 ----------
 
 @app.post("/agent/qa", response_model=AgentResponse)
@@ -135,7 +176,7 @@ async def agent_qa(req: AgentRequest):
         max_turns=max_turns,
     )
     sess.append_turn(session_id, req.question, result["answer"], result["tool_calls_log"])
-    await _run_memory_stop_hooks(
+    _schedule_memory_stop_hooks(
         session_id=session_id,
         user_id=req.user_id,
         question=req.question,
@@ -205,17 +246,13 @@ async def agent_qa_stream(req: AgentRequest):
         answer = "".join(answer_parts)
         if answer:
             sess.append_turn(session_id, req.question, answer, tool_calls_log)
-            hook_result = await _run_memory_stop_hooks(
+            _schedule_memory_stop_hooks(
                 session_id=session_id,
                 user_id=req.user_id,
                 question=req.question,
                 answer=answer,
                 tool_calls_log=tool_calls_log,
             )
-            if hook_result["session_summary_updated"]:
-                yield f"data: {json.dumps({'type': 'session_summary_updated'}, ensure_ascii=False)}\n\n"
-            if hook_result["memories_extracted"]:
-                yield f"data: {json.dumps({'type': 'memories_extracted', 'count': hook_result['memories_extracted']}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         event_gen(),
@@ -241,6 +278,81 @@ def list_sessions(user_id: Optional[str] = None, limit: int = 50, offset: int = 
     return sess.list_sessions(limit=limit, offset=offset, user_id=user_id)
 
 
+@app.get("/memories")
+def list_memory_items(
+    user_id: Optional[str] = None,
+    query: str = "",
+    include_inactive: bool = False,
+    scope: Optional[str] = None,
+    memory_type: Optional[str] = None,
+    limit: int = 50,
+):
+    from app.memory.store import list_memories, search_memories
+
+    if query:
+        return search_memories(
+            query=query,
+            user_id=user_id,
+            include_inactive=include_inactive,
+            scope=scope,
+            memory_type=memory_type,
+            limit=limit,
+        )
+    return list_memories(
+        user_id=user_id,
+        include_inactive=include_inactive,
+        limit=limit,
+    )
+
+
+@app.post("/agent/tasks")
+def create_agent_task(req: AgentTaskRequest):
+    from app.agent.tasks import create_task
+    return create_task(
+        question=req.question,
+        user_id=req.user_id,
+        session_id=req.session_id,
+        task_type=req.task_type,
+    )
+
+
+@app.get("/agent/tasks")
+def list_agent_tasks(
+    user_id: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    from app.agent.tasks import list_tasks
+    return list_tasks(user_id=user_id, status=status, limit=limit, offset=offset)
+
+
+@app.get("/agent/tasks/{task_id}")
+def get_agent_task(task_id: str):
+    from app.agent.tasks import get_task
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return task
+
+
+@app.get("/agent/tasks/{task_id}/steps")
+def get_agent_task_steps(task_id: str):
+    from app.agent.tasks import get_task, list_steps
+    if not get_task(task_id):
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return list_steps(task_id)
+
+
+@app.post("/agent/tasks/{task_id}/cancel")
+def cancel_agent_task(task_id: str):
+    from app.agent.tasks import cancel_task
+    task = cancel_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    return task
+
+
 @app.post("/qa", response_model=QAResponse)
 async def qa(req: QARequest):
     result = await ask(req.question, user_id=req.user_id, top_k=req.top_k)
@@ -262,7 +374,8 @@ def get_stats():
           (SELECT COUNT(*) FROM entities) AS entities,
           (SELECT COUNT(*) FROM chat_sessions) AS chat_sessions,
           (SELECT COUNT(*) FROM session_summaries) AS session_summaries,
-          (SELECT COUNT(*) FROM memories) AS memories
+          (SELECT COUNT(*) FROM memories) AS memories,
+          (SELECT COUNT(*) FROM agent_tasks) AS agent_tasks
         """
     ).fetchone()
     conn.close()
