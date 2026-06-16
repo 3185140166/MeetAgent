@@ -39,11 +39,11 @@ build/
 
 # 测试数据（含用户会议内容，按需决定是否提交）
 test_meetingdata/
+tests/
 
 # 临时文件
 _*.txt
 
 # 本地私有文档（不公开）
 docs/
-tests/
 CURRENT_PROJECT_STATE.md

@@ -45,3 +45,7 @@ MEMORY_EXTRACTION_MAX_MEMORIES: int = int(os.environ.get("MEMORY_EXTRACTION_MAX_
 MEMORY_EXTRACTION_MIN_CONFIDENCE: float = float(os.environ.get("MEMORY_EXTRACTION_MIN_CONFIDENCE", "0.65"))
 MEMORY_RETRIEVAL_ENABLED: bool = os.environ.get("MEMORY_RETRIEVAL_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 MEMORY_RETRIEVAL_TOP_K: int = int(os.environ.get("MEMORY_RETRIEVAL_TOP_K", "5"))
+
+# Trusted Agent verifier. Keep enabled by default for agent QA, but fail open if
+# the verifier model call has an error.
+AGENT_VERIFIER_ENABLED: bool = os.environ.get("AGENT_VERIFIER_ENABLED", "true").lower() in ("1", "true", "yes", "on")

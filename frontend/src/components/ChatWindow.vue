@@ -538,7 +538,10 @@ async function send() {
 }
 .empty-hint .sub { font-size: 13px; margin-top: 8px; }
 
-.message { display: flex; }
+.message {
+  display: flex;
+  contain: layout paint;
+}
 .message.user  { justify-content: flex-end; }
 .message.assistant { justify-content: flex-start; }
 
@@ -550,6 +553,7 @@ async function send() {
   line-height: 1.7;
   word-break: break-word;
   box-shadow: 0 14px 34px rgba(15, 23, 42, 0.08);
+  isolation: isolate;
 }
 
 .user-bubble {
@@ -559,11 +563,10 @@ async function send() {
 }
 
 .assistant-bubble {
-  background: rgba(255, 255, 255, 0.86);
+  background: #fff;
   color: #172033;
-  border: 1px solid rgba(255, 255, 255, 0.76);
+  border: 1px solid rgba(226, 232, 240, 0.9);
   border-bottom-left-radius: 6px;
-  backdrop-filter: blur(18px);
 }
 
 .tool-calls {

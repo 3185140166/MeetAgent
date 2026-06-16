@@ -117,11 +117,23 @@ def append_turn(
     question: str,
     answer: str,
     tool_calls_log: list,
+    verification: Optional[dict] = None,
 ):
     """追加一轮对话（用户问 + 助手答）到数据库。"""
     conn = get_connection()
     now = _now()
-    tool_calls_json = json.dumps(tool_calls_log, ensure_ascii=False) if tool_calls_log else None
+    stored_tool_calls = list(tool_calls_log or [])
+    if verification:
+        stored_tool_calls.append({
+            "turn": 0,
+            "tool": "answer_verifier",
+            "arguments": {},
+            "result_preview": json.dumps(verification, ensure_ascii=False)[:200],
+            "failed": not verification.get("passed", True),
+            "verification": verification,
+            "sources": [],
+        })
+    tool_calls_json = json.dumps(stored_tool_calls, ensure_ascii=False) if stored_tool_calls else None
 
     conn.execute(
         "INSERT INTO chat_messages (session_id, role, content, created_at) VALUES (?, 'user', ?, ?)",
@@ -288,7 +300,12 @@ def get_history(session_id: str) -> list:
         item = {"role": r["role"], "content": r["content"], "created_at": r["created_at"]}
         if r["tool_calls"]:
             tool_calls = json.loads(r["tool_calls"])
-            item["tool_calls"] = tool_calls
+            visible_tool_calls = [
+                call for call in tool_calls
+                if call.get("tool") != "answer_verifier"
+            ]
+            if visible_tool_calls:
+                item["tool_calls"] = visible_tool_calls
             sources = []
             seen = set()
             for call in tool_calls:
@@ -304,6 +321,10 @@ def get_history(session_id: str) -> list:
                     sources.append(source)
             if sources:
                 item["sources"] = sources
+            for call in tool_calls:
+                if call.get("verification"):
+                    item["verification"] = call["verification"]
+                    break
         result.append(item)
     return result
 

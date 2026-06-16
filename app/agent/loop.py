@@ -7,6 +7,7 @@ from typing import Optional
 from app.llm.client import chat_with_tools, chat_with_tools_stream
 from app.agent.tools import TOOLS, execute_tool_structured
 from app.agent.types import Source, ToolResult
+from app.agent.verifier import rewrite_answer, verify_answer
 
 _MAX_TOOL_FAILURES = 2
 
@@ -61,6 +62,35 @@ def _renumber_sources(result: ToolResult, all_sources: list[Source]) -> ToolResu
             result.text_for_llm = result.text_for_llm.replace(f"[{old_id}]", f"[{new_id}]")
         all_sources.append(source)
     return result
+
+
+async def _verify_and_maybe_rewrite(
+    question: str,
+    answer: str,
+    sources: list[dict],
+    tool_calls_log: list[dict],
+    rewrite: bool,
+) -> tuple[str, dict]:
+    verification = await verify_answer(
+        question=question,
+        answer=answer,
+        sources=sources,
+        tool_logs=tool_calls_log,
+    )
+    if rewrite and not verification.get("passed", True):
+        answer = await rewrite_answer(
+            question=question,
+            draft_answer=answer,
+            verification=verification,
+            sources=sources,
+        )
+        verification = await verify_answer(
+            question=question,
+            answer=answer,
+            sources=sources,
+            tool_logs=tool_calls_log,
+        )
+    return answer, verification
 
 
 SYSTEM_PROMPT = """你是一个会议智能助手，可以调用工具来查询用户的会议数据后回答问题。
@@ -148,6 +178,14 @@ async def run_agent(
                 })
         else:
             answer = msg.get("content", "")
+            sources = [source.to_dict() for source in all_sources]
+            answer, verification = await _verify_and_maybe_rewrite(
+                question=question,
+                answer=answer,
+                sources=sources,
+                tool_calls_log=tool_calls_log,
+                rewrite=True,
+            )
             new_history = history + [
                 {"role": "user", "content": question},
                 {"role": "assistant", "content": answer},
@@ -155,15 +193,25 @@ async def run_agent(
             return {
                 "answer": answer,
                 "tool_calls_log": tool_calls_log,
-                "sources": [source.to_dict() for source in all_sources],
+                "sources": sources,
+                "verification": verification,
                 "history": new_history,
             }
 
     answer = "抱歉，未能在有限步骤内完成回答，请重新提问或换一种描述方式。"
+    sources = [source.to_dict() for source in all_sources]
+    answer, verification = await _verify_and_maybe_rewrite(
+        question=question,
+        answer=answer,
+        sources=sources,
+        tool_calls_log=tool_calls_log,
+        rewrite=True,
+    )
     return {
         "answer": answer,
         "tool_calls_log": tool_calls_log,
-        "sources": [source.to_dict() for source in all_sources],
+        "sources": sources,
+        "verification": verification,
         "history": history + [
             {"role": "user", "content": question},
             {"role": "assistant", "content": answer},
@@ -204,19 +252,30 @@ async def run_agent_stream(
 
         async for event in chat_with_tools_stream(messages, TOOLS):
             if event["type"] == "content":
+                answer_parts.append(event["content"])
                 yield {"type": "token", "content": event["content"]}
             elif event["type"] == "tool_calls":
                 tool_message = event["message"]
 
         if not tool_message:
+            answer = "".join(answer_parts)
+            sources = [source.to_dict() for source in all_sources]
+            verification = await verify_answer(
+                question=question,
+                answer=answer,
+                sources=sources,
+                tool_logs=tool_calls_log,
+            )
             yield {
                 "type": "done",
                 "tool_calls_log": tool_calls_log,
-                "sources": [source.to_dict() for source in all_sources],
+                "sources": sources,
+                "verification": verification,
             }
             return
 
         messages.append(tool_message)
+        answer_parts = []
         for tc in tool_message.get("tool_calls", []):
             fn = tc["function"]
             tool_name = fn["name"]

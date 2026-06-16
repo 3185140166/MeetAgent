@@ -77,6 +77,7 @@ class AgentResponse(BaseModel):
     answer: str
     tool_calls_log: list[ToolCallItem]
     sources: list[dict] = []
+    verification: Optional[dict] = None
     session_id: str
 
 
@@ -176,7 +177,13 @@ async def agent_qa(req: AgentRequest):
         memory_context=memory_context,
         max_turns=max_turns,
     )
-    sess.append_turn(session_id, req.question, result["answer"], result["tool_calls_log"])
+    sess.append_turn(
+        session_id,
+        req.question,
+        result["answer"],
+        result["tool_calls_log"],
+        verification=result.get("verification"),
+    )
     _schedule_memory_stop_hooks(
         session_id=session_id,
         user_id=req.user_id,
@@ -188,6 +195,7 @@ async def agent_qa(req: AgentRequest):
         "answer": result["answer"],
         "tool_calls_log": result["tool_calls_log"],
         "sources": result.get("sources", []),
+        "verification": result.get("verification"),
         "session_id": session_id,
     }
 
@@ -228,6 +236,7 @@ async def agent_qa_stream(req: AgentRequest):
         answer_parts: list[str] = []
         tool_calls_log: list = []
         sources: list = []
+        verification: Optional[dict] = None
 
         try:
             async for event in run_agent_stream(
@@ -242,6 +251,7 @@ async def agent_qa_stream(req: AgentRequest):
                 elif event["type"] == "done":
                     tool_calls_log = event.get("tool_calls_log", [])
                     sources = event.get("sources", [])
+                    verification = event.get("verification")
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
@@ -249,7 +259,13 @@ async def agent_qa_stream(req: AgentRequest):
 
         answer = "".join(answer_parts)
         if answer:
-            sess.append_turn(session_id, req.question, answer, tool_calls_log)
+            sess.append_turn(
+                session_id,
+                req.question,
+                answer,
+                tool_calls_log,
+                verification=verification,
+            )
             _schedule_memory_stop_hooks(
                 session_id=session_id,
                 user_id=req.user_id,

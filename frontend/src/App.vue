@@ -169,6 +169,7 @@ async function switchSession(s) {
       role: m.role,
       content: m.content,
       sources: m.sources || [],
+      verification: m.verification || null,
       toolCalls: m.tool_calls
         ? m.tool_calls.map(tc => ({ tool: tc.tool, arguments: tc.arguments || {}, status: 'done' }))
         : [],
@@ -203,13 +204,14 @@ async function sendMessage(question) {
   if (runningBySession[sessionId]) return
 
   const messages = ensureSessionMessages(sessionId)
-  messages.push({ id: Date.now(), role: 'user', content: question, sources: [], toolCalls: [] })
+  messages.push({ id: Date.now(), role: 'user', content: question, sources: [], verification: null, toolCalls: [] })
 
   const assistantMsg = reactive({
     id: Date.now() + 1,
     role: 'assistant',
     content: '',
     sources: [],
+    verification: null,
     toolCalls: [],
     toolsExpanded: false,
     streaming: true,
@@ -244,6 +246,7 @@ async function sendMessage(question) {
 
       } else if (event.type === 'done') {
         assistantMsg.sources = event.sources || []
+        assistantMsg.verification = event.verification || null
         assistantMsg.streaming = false
 
       } else if (event.type === 'error') {
