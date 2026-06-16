@@ -76,6 +76,7 @@ class ToolCallItem(BaseModel):
 class AgentResponse(BaseModel):
     answer: str
     tool_calls_log: list[ToolCallItem]
+    sources: list[dict] = []
     session_id: str
 
 
@@ -186,6 +187,7 @@ async def agent_qa(req: AgentRequest):
     return {
         "answer": result["answer"],
         "tool_calls_log": result["tool_calls_log"],
+        "sources": result.get("sources", []),
         "session_id": session_id,
     }
 
@@ -225,6 +227,7 @@ async def agent_qa_stream(req: AgentRequest):
 
         answer_parts: list[str] = []
         tool_calls_log: list = []
+        sources: list = []
 
         try:
             async for event in run_agent_stream(
@@ -238,6 +241,7 @@ async def agent_qa_stream(req: AgentRequest):
                     answer_parts.append(event["content"])
                 elif event["type"] == "done":
                     tool_calls_log = event.get("tool_calls_log", [])
+                    sources = event.get("sources", [])
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"

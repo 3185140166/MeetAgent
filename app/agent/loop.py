@@ -5,7 +5,8 @@ import json
 from typing import Optional
 
 from app.llm.client import chat_with_tools, chat_with_tools_stream
-from app.agent.tools import TOOLS, execute_tool
+from app.agent.tools import TOOLS, execute_tool_structured
+from app.agent.types import Source, ToolResult
 
 _MAX_TOOL_FAILURES = 2
 
@@ -35,15 +36,31 @@ def _execute_tool_with_guard(
     args: dict,
     user_id: Optional[str],
     failure_counts: dict[str, int],
-) -> tuple[str, bool]:
+) -> tuple[ToolResult, bool]:
     if failure_counts.get(tool_name, 0) >= _MAX_TOOL_FAILURES:
-        return _blocked_tool_message(tool_name), True
+        return ToolResult(
+            ok=False,
+            tool=tool_name,
+            text_for_llm=_blocked_tool_message(tool_name),
+            error=_blocked_tool_message(tool_name),
+        ), True
 
-    result = execute_tool(tool_name, args, user_id)
-    failed = _is_tool_failure(result)
+    result = execute_tool_structured(tool_name, args, user_id)
+    failed = _is_tool_failure(result.text_for_llm)
     if failed:
         failure_counts[tool_name] = failure_counts.get(tool_name, 0) + 1
     return result, failed
+
+
+def _renumber_sources(result: ToolResult, all_sources: list[Source]) -> ToolResult:
+    for source in result.sources:
+        old_id = source.source_id
+        new_id = f"S{len(all_sources) + 1}"
+        source.source_id = new_id
+        if old_id:
+            result.text_for_llm = result.text_for_llm.replace(f"[{old_id}]", f"[{new_id}]")
+        all_sources.append(source)
+    return result
 
 
 SYSTEM_PROMPT = """你是一个会议智能助手，可以调用工具来查询用户的会议数据后回答问题。
@@ -94,6 +111,7 @@ async def run_agent(
 
     tool_calls_log = []
     failure_counts: dict[str, int] = {}
+    all_sources: list[Source] = []
 
     for turn in range(max_turns):
         response = await chat_with_tools(messages, TOOLS)
@@ -112,19 +130,21 @@ async def run_agent(
                     args = {}
 
                 result, failed = _execute_tool_with_guard(tool_name, args, user_id, failure_counts)
+                result = _renumber_sources(result, all_sources)
 
                 tool_calls_log.append({
                     "turn": turn + 1,
                     "tool": tool_name,
                     "arguments": args,
-                    "result_preview": result[:200],
+                    "result_preview": result.text_for_llm[:200],
                     "failed": failed,
+                    "sources": result.sources_as_dict(),
                 })
 
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc["id"],
-                    "content": result,
+                    "content": result.text_for_llm,
                 })
         else:
             answer = msg.get("content", "")
@@ -135,6 +155,7 @@ async def run_agent(
             return {
                 "answer": answer,
                 "tool_calls_log": tool_calls_log,
+                "sources": [source.to_dict() for source in all_sources],
                 "history": new_history,
             }
 
@@ -142,6 +163,7 @@ async def run_agent(
     return {
         "answer": answer,
         "tool_calls_log": tool_calls_log,
+        "sources": [source.to_dict() for source in all_sources],
         "history": history + [
             {"role": "user", "content": question},
             {"role": "assistant", "content": answer},
@@ -175,6 +197,7 @@ async def run_agent_stream(
 
     tool_calls_log = []
     failure_counts: dict[str, int] = {}
+    all_sources: list[Source] = []
 
     for turn in range(max_turns):
         tool_message = None
@@ -186,7 +209,11 @@ async def run_agent_stream(
                 tool_message = event["message"]
 
         if not tool_message:
-            yield {"type": "done", "tool_calls_log": tool_calls_log}
+            yield {
+                "type": "done",
+                "tool_calls_log": tool_calls_log,
+                "sources": [source.to_dict() for source in all_sources],
+            }
             return
 
         messages.append(tool_message)
@@ -201,20 +228,22 @@ async def run_agent_stream(
             yield {"type": "tool_start", "tool": tool_name, "arguments": args}
 
             result, failed = _execute_tool_with_guard(tool_name, args, user_id, failure_counts)
+            result = _renumber_sources(result, all_sources)
             tool_calls_log.append({
                 "turn": turn + 1,
                 "tool": tool_name,
                 "arguments": args,
-                "result_preview": result[:200],
+                "result_preview": result.text_for_llm[:200],
                 "failed": failed,
+                "sources": result.sources_as_dict(),
             })
 
-            yield {"type": "tool_done", "tool": tool_name, "preview": result[:100], "failed": failed}
+            yield {"type": "tool_done", "tool": tool_name, "preview": result.text_for_llm[:100], "failed": failed}
 
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc["id"],
-                "content": result,
+                "content": result.text_for_llm,
             })
 
     yield {"type": "error", "message": "超过最大工具调用轮次，请重新提问"}

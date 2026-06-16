@@ -287,7 +287,23 @@ def get_history(session_id: str) -> list:
     for r in rows:
         item = {"role": r["role"], "content": r["content"], "created_at": r["created_at"]}
         if r["tool_calls"]:
-            item["tool_calls"] = json.loads(r["tool_calls"])
+            tool_calls = json.loads(r["tool_calls"])
+            item["tool_calls"] = tool_calls
+            sources = []
+            seen = set()
+            for call in tool_calls:
+                for source in call.get("sources") or []:
+                    key = source.get("source_id") or (
+                        source.get("note_id"),
+                        source.get("chunk_id"),
+                        source.get("quote"),
+                    )
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    sources.append(source)
+            if sources:
+                item["sources"] = sources
         result.append(item)
     return result
 

@@ -3,6 +3,7 @@
 
 import json
 from typing import Optional
+from app.agent.types import Source, ToolResult
 from app.config import ENABLE_HYBRID_SEARCH
 from app.storage.db import get_connection
 
@@ -234,46 +235,55 @@ def _fmt_rows(rows, fields) -> str:
 
 
 def execute_tool(name: str, arguments: dict, user_id: Optional[str]) -> str:
+    return execute_tool_structured(name, arguments, user_id).text_for_llm
+
+
+def execute_tool_structured(name: str, arguments: dict, user_id: Optional[str]) -> ToolResult:
     if name == "search_meetings":
-        return _tool_search_meetings(arguments.get("query", ""), user_id)
+        return _tool_search_meetings_structured(arguments.get("query", ""), user_id)
     if name == "get_action_items":
-        return _tool_get_action_items(user_id, arguments.get("keyword"))
+        return _tool_get_action_items_structured(user_id, arguments.get("keyword"))
     if name == "get_decisions":
-        return _tool_get_decisions(user_id, arguments.get("keyword"))
+        return _tool_get_decisions_structured(user_id, arguments.get("keyword"))
     if name == "get_risks":
-        return _tool_get_risks(user_id, arguments.get("keyword"))
+        return _tool_get_risks_structured(user_id, arguments.get("keyword"))
     if name == "get_meeting_summary":
-        return _tool_get_meeting_summary(arguments.get("note_id", ""), user_id)
+        text = _tool_get_meeting_summary(arguments.get("note_id", ""), user_id)
+        return ToolResult(ok=True, tool=name, text_for_llm=text)
     if name == "list_meetings":
-        return _tool_list_meetings(user_id, arguments.get("limit", 10))
+        return _tool_list_meetings_structured(user_id, arguments.get("limit", 10))
     if name == "get_meeting_detail":
-        return _tool_get_meeting_detail(
+        text = _tool_get_meeting_detail(
             arguments.get("note_id", ""),
             user_id,
             arguments.get("chunk_limit", 5),
         )
+        return ToolResult(ok=True, tool=name, text_for_llm=text)
     if name == "search_by_time_range":
-        return _tool_search_by_time_range(
+        text = _tool_search_by_time_range(
             user_id=user_id,
             query=arguments.get("query", ""),
             start=arguments.get("start"),
             end=arguments.get("end"),
             limit=arguments.get("limit", 10),
         )
+        return ToolResult(ok=True, tool=name, text_for_llm=text)
     if name == "get_topic_history":
-        return _tool_get_topic_history(
+        text = _tool_get_topic_history(
             user_id=user_id,
             topic=arguments.get("topic", ""),
             limit=arguments.get("limit", 10),
         )
+        return ToolResult(ok=True, tool=name, text_for_llm=text)
     if name == "generate_weekly_report":
-        return _tool_generate_weekly_report(
+        text = _tool_generate_weekly_report(
             user_id=user_id,
             start=arguments.get("start"),
             end=arguments.get("end"),
         )
+        return ToolResult(ok=True, tool=name, text_for_llm=text)
     if name == "web_search":
-        return _tool_web_search(
+        text = _tool_web_search(
             query=arguments.get("query", ""),
             max_results=arguments.get("max_results"),
             topic=arguments.get("topic"),
@@ -281,7 +291,8 @@ def execute_tool(name: str, arguments: dict, user_id: Optional[str]) -> str:
             start_date=arguments.get("start_date"),
             end_date=arguments.get("end_date"),
         )
-    return f"未知工具: {name}"
+        return ToolResult(ok=True, tool=name, text_for_llm=text)
+    return ToolResult(ok=False, tool=name, text_for_llm=f"未知工具: {name}", error=f"未知工具: {name}")
 
 
 def _safe_limit(value, default: int, maximum: int) -> int:
@@ -308,6 +319,19 @@ def _fmt_meeting_ref(row: dict) -> str:
     return f"《{title}》{create_time}"
 
 
+def _source_from_row(source_id: str, row: dict, quote: str = "", score=None) -> Source:
+    return Source(
+        source_id=source_id,
+        note_id=row.get("note_id") or "",
+        chunk_id=row.get("chunk_id") or "",
+        meeting_title=row.get("title") or row.get("meeting_title") or "",
+        create_time=row.get("create_time") or "",
+        speaker=row.get("speaker") or "",
+        quote=(quote or row.get("text") or row.get("content") or "")[:500],
+        score=score,
+    )
+
+
 def _tool_web_search(
     query: str,
     max_results=None,
@@ -332,6 +356,10 @@ def _tool_web_search(
 
 
 def _tool_search_meetings(query: str, user_id: Optional[str]) -> str:
+    return _tool_search_meetings_structured(query, user_id).text_for_llm
+
+
+def _tool_search_meetings_structured(query: str, user_id: Optional[str]) -> ToolResult:
     if ENABLE_HYBRID_SEARCH:
         try:
             from app.embed.vector_store import count
@@ -348,21 +376,42 @@ def _tool_search_meetings(query: str, user_id: Optional[str]) -> str:
         hits = bm25_search(query, user_id=user_id, top_k=5)
 
     if not hits:
-        return "未找到相关会议片段。"
+        return ToolResult(
+            ok=True,
+            tool="search_meetings",
+            text_for_llm="未找到相关会议片段。",
+            data=[],
+            sources=[],
+        )
 
     parts = []
+    sources = []
     for i, h in enumerate(hits, 1):
+        source_id = f"S{i}"
+        score = h.get("rerank_score") or h.get("rrf_score") or h.get("score")
+        source = _source_from_row(source_id, h, quote=h.get("text", ""), score=score)
+        sources.append(source)
         parts.append(
-            f"[片段{i}] 会议：{h.get('title', '')} | 时间：{h.get('create_time', '')} | "
+            f"[{source_id}] 会议：{h.get('title', '')} | 时间：{h.get('create_time', '')} | "
             f"发言人：{h.get('speaker', '')}\n{h['text']}"
         )
-    return "\n\n".join(parts)
+    return ToolResult(
+        ok=True,
+        tool="search_meetings",
+        text_for_llm="\n\n".join(parts),
+        data=hits,
+        sources=sources,
+    )
 
 
 def _tool_get_action_items(user_id: Optional[str], keyword: Optional[str]) -> str:
+    return _tool_get_action_items_structured(user_id, keyword).text_for_llm
+
+
+def _tool_get_action_items_structured(user_id: Optional[str], keyword: Optional[str]) -> ToolResult:
     conn = get_connection()
     sql = (
-        "SELECT ai.content, ai.owner, ai.due, m.title, m.create_time "
+        "SELECT ai.content, ai.owner, ai.due, ai.note_id, m.title, m.create_time "
         "FROM action_items ai JOIN meetings m ON ai.note_id = m.note_id"
     )
     params = []
@@ -380,23 +429,36 @@ def _tool_get_action_items(user_id: Optional[str], keyword: Optional[str]) -> st
     conn.close()
 
     if not rows:
-        return "（无待办事项）"
+        return ToolResult(ok=True, tool="get_action_items", text_for_llm="（无待办事项）", data=[], sources=[])
     lines = []
+    sources = []
     for r in rows:
+        source_id = f"S{len(sources) + 1}"
         line = f"• {r['content']}"
         if r.get("owner"):
             line += f"  [负责人: {r['owner']}]"
         if r.get("due"):
             line += f"  [截止: {r['due']}]"
-        line += f"  — 来自《{r['title']}》{r['create_time'][:10]}"
+        line += f"  — 来自《{r['title']}》{r['create_time'][:10]} [{source_id}]"
         lines.append(line)
-    return f"共 {len(rows)} 条待办：\n" + "\n".join(lines)
+        sources.append(_source_from_row(source_id, r, quote=r.get("content", "")))
+    return ToolResult(
+        ok=True,
+        tool="get_action_items",
+        text_for_llm=f"共 {len(rows)} 条待办：\n" + "\n".join(lines),
+        data=rows,
+        sources=sources,
+    )
 
 
 def _tool_get_decisions(user_id: Optional[str], keyword: Optional[str]) -> str:
+    return _tool_get_decisions_structured(user_id, keyword).text_for_llm
+
+
+def _tool_get_decisions_structured(user_id: Optional[str], keyword: Optional[str]) -> ToolResult:
     conn = get_connection()
     sql = (
-        "SELECT d.content, m.title, m.create_time "
+        "SELECT d.content, d.note_id, m.title, m.create_time "
         "FROM decisions d JOIN meetings m ON d.note_id = m.note_id"
     )
     params = []
@@ -414,17 +476,30 @@ def _tool_get_decisions(user_id: Optional[str], keyword: Optional[str]) -> str:
     conn.close()
 
     if not rows:
-        return "（无决策记录）"
+        return ToolResult(ok=True, tool="get_decisions", text_for_llm="（无决策记录）", data=[], sources=[])
     lines = []
+    sources = []
     for r in rows:
-        lines.append(f"• {r['content']}  — 来自《{r['title']}》{r['create_time'][:10]}")
-    return f"共 {len(rows)} 条决策：\n" + "\n".join(lines)
+        source_id = f"S{len(sources) + 1}"
+        lines.append(f"• {r['content']}  — 来自《{r['title']}》{r['create_time'][:10]} [{source_id}]")
+        sources.append(_source_from_row(source_id, r, quote=r.get("content", "")))
+    return ToolResult(
+        ok=True,
+        tool="get_decisions",
+        text_for_llm=f"共 {len(rows)} 条决策：\n" + "\n".join(lines),
+        data=rows,
+        sources=sources,
+    )
 
 
 def _tool_get_risks(user_id: Optional[str], keyword: Optional[str]) -> str:
+    return _tool_get_risks_structured(user_id, keyword).text_for_llm
+
+
+def _tool_get_risks_structured(user_id: Optional[str], keyword: Optional[str]) -> ToolResult:
     conn = get_connection()
     sql = (
-        "SELECT r.content, m.title, m.create_time "
+        "SELECT r.content, r.note_id, m.title, m.create_time "
         "FROM risks r JOIN meetings m ON r.note_id = m.note_id"
     )
     params = []
@@ -442,11 +517,20 @@ def _tool_get_risks(user_id: Optional[str], keyword: Optional[str]) -> str:
     conn.close()
 
     if not rows:
-        return "（无风险记录）"
+        return ToolResult(ok=True, tool="get_risks", text_for_llm="（无风险记录）", data=[], sources=[])
     lines = []
+    sources = []
     for r in rows:
-        lines.append(f"• {r['content']}  — 来自《{r['title']}》{r['create_time'][:10]}")
-    return f"共 {len(rows)} 条风险：\n" + "\n".join(lines)
+        source_id = f"S{len(sources) + 1}"
+        lines.append(f"• {r['content']}  — 来自《{r['title']}》{r['create_time'][:10]} [{source_id}]")
+        sources.append(_source_from_row(source_id, r, quote=r.get("content", "")))
+    return ToolResult(
+        ok=True,
+        tool="get_risks",
+        text_for_llm=f"共 {len(rows)} 条风险：\n" + "\n".join(lines),
+        data=rows,
+        sources=sources,
+    )
 
 
 def _tool_get_meeting_summary(note_id: str, user_id: Optional[str]) -> str:
@@ -491,6 +575,10 @@ def _tool_get_meeting_summary(note_id: str, user_id: Optional[str]) -> str:
 
 
 def _tool_list_meetings(user_id: Optional[str], limit: int) -> str:
+    return _tool_list_meetings_structured(user_id, limit).text_for_llm
+
+
+def _tool_list_meetings_structured(user_id: Optional[str], limit: int) -> ToolResult:
     limit = min(int(limit), 50)
     conn = get_connection()
     sql = (
@@ -507,18 +595,30 @@ def _tool_list_meetings(user_id: Optional[str], limit: int) -> str:
     conn.close()
 
     if not rows:
-        return "（无会议记录）"
+        return ToolResult(ok=True, tool="list_meetings", text_for_llm="（无会议记录）", data=[], sources=[])
     lines = []
+    sources = []
     for r in rows:
+        source_id = f"S{len(sources) + 1}"
         dur = f" {int(r['duration_minutes'])}分钟" if r.get("duration_minutes") else ""
         lines.append(
             f"• [{r['create_time'][:10]}]{dur} 《{r['title']}》"
+            f" [{source_id}]"
             f"  （内部note_id={r['note_id']}，仅供工具调用，最终回答不要展示）"
         )
+        sources.append(_source_from_row(source_id, r, quote=f"会议：{r['title']}"))
     return (
-        f"共 {len(rows)} 场会议（最近优先）。"
-        "最终回答请只展示序号、会议标题、日期、时长，不要展示 note_id：\n"
-        + "\n".join(lines)
+        ToolResult(
+            ok=True,
+            tool="list_meetings",
+            text_for_llm=(
+                f"共 {len(rows)} 场会议（最近优先）。"
+                "最终回答请只展示序号、会议标题、日期、时长，不要展示 note_id：\n"
+                + "\n".join(lines)
+            ),
+            data=rows,
+            sources=sources,
+        )
     )
 
 

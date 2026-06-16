@@ -50,6 +50,22 @@
 
           <!-- 回答内容 -->
           <div class="content markdown-body" v-html="renderContent(msg.content)"></div>
+          <div v-if="msg.sources?.length" class="source-list">
+            <div class="source-list-title">引用来源</div>
+            <div
+              v-for="source in msg.sources"
+              :key="source.source_id + source.chunk_id + source.quote"
+              class="source-item"
+            >
+              <span class="source-id">[{{ source.source_id }}]</span>
+              <span class="source-main">
+                <span class="source-title">《{{ source.meeting_title || '未命名会议' }}》</span>
+                <span v-if="source.create_time" class="source-meta">{{ shortDate(source.create_time) }}</span>
+                <span v-if="source.speaker" class="source-meta">发言人：{{ source.speaker }}</span>
+                <span v-if="source.quote" class="source-quote">{{ source.quote }}</span>
+              </span>
+            </div>
+          </div>
           <span v-if="msg.streaming" class="cursor">▌</span>
         </div>
       </div>
@@ -170,6 +186,10 @@ function compactValue(value, maxLength = 72) {
   if (value === null || value === undefined || value === '') return ''
   const text = String(value)
   return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text
+}
+
+function shortDate(value) {
+  return String(value || '').slice(0, 10)
 }
 
 function toolArgumentSummary(toolCall) {
@@ -882,6 +902,64 @@ textarea:disabled { background: #f9fafb; }
   text-decoration: none;
 }
 .markdown-body :deep(a:hover) { text-decoration: underline; }
+
+.source-list {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(203, 213, 225, 0.72);
+}
+
+.source-list-title {
+  margin-bottom: 8px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.source-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 0;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.source-item + .source-item {
+  border-top: 1px dashed rgba(203, 213, 225, 0.72);
+}
+
+.source-id {
+  color: #0f766e;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.source-main {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+}
+
+.source-title {
+  color: #0f172a;
+  font-weight: 650;
+}
+
+.source-meta {
+  color: #64748b;
+}
+
+.source-quote {
+  flex-basis: 100%;
+  display: -webkit-box;
+  overflow: hidden;
+  color: #64748b;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
 
 @media (max-width: 720px) {
   .messages { padding: 20px 14px; }
