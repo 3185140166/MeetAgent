@@ -44,8 +44,6 @@ test_meetingdata/
 _*.txt
 
 # 本地私有文档（不公开）
-docs/architecture_deploy.md
-docs/memory.pdf
-docs/memory_pdf_detailed_reading.md
-docs/readme.md
+docs/
+tests/
 CURRENT_PROJECT_STATE.md
