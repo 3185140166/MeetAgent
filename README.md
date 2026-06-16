@@ -1,6 +1,27 @@
 # MeetAgent
 
-基于本地会议文件的智能问答系统。将会议转写内容导入本地数据库，通过 BM25 检索相关片段，结合大模型回答自然语言问题，答案附带来源引用；同时支持对每场会议离线抽取结构化记忆（摘要、待办、决策、风险、实体）。
+基于本地会议文件的智能问答系统。将会议转写内容导入本地数据库，通过 BM25 / 向量混合检索相关片段，结合大模型回答自然语言问题；同时支持对每场会议离线抽取结构化记忆（摘要、待办、决策、风险、实体），并通过 Agent 工具调用完成多轮会议问答。
+
+---
+
+## 功能概览
+
+- 会议 JSON 导入：支持按用户导入多场会议，写入 SQLite。
+- 原文检索问答：基于 BM25 或 BM25 + 向量混合检索回答会议内容问题。
+- Agent 工具调用：LLM 自动选择搜索会议、查待办、查决策、查风险、取摘要、查会议详情等工具。
+- 流式对话：后端 SSE 流式返回工具状态和回答 token，前端实时展示。
+- 多会话聊天：左侧管理会话，可切换历史会话。
+- 后台会话运行：一个会话生成中可切到其他会话，右下角提示后台运行状态。
+- 工具步骤展示：前端展示 Agent 调用了哪些工具，可折叠查看参数和执行状态。
+- Markdown 渲染：支持标题、列表、引用、代码块、分割线、链接、表格等展示。
+- 表格优化：会议列表类 Markdown 表格按内容自适应，过滤分隔行误渲染。
+- 结构化会议记忆：离线抽取会议摘要、待办、决策、风险、实体。
+- Session Memory：长会话自动摘要压缩，减少历史上下文膨胀。
+- Long-term Memory：支持长期记忆 CRUD、抽取、召回、清理脚本。
+- 时间范围与主题追踪：支持按时间检索会议内容、追踪主题历史。
+- 周报素材生成：按时间范围汇总会议摘要、待办、决策和风险。
+- 联网搜索：可选 Tavily 搜索外部信息，回答时附 URL 来源。
+- 管理页：查看数据概览、用户、会议、会话、记忆和任务状态。
 
 ---
 
@@ -238,6 +259,15 @@ http://localhost:5173/admin
 
 管理页可查看全局数据、用户列表、用户会议列表、会话列表和会话消息。聊天会话会持久化到 SQLite 的 `chat_sessions` / `chat_messages` 表，不再按固定时间自动清理；后续如需“短期记忆 / 长期记忆”，应单独生成结构化记忆产物，而不是依赖聊天 session 过期逻辑。
 
+聊天页当前支持：
+
+- SSE 流式回答，工具执行完成后回答会逐 token 展示。
+- Agent 工具调用过程展示，可折叠查看每一步。
+- 工具调用参数摘要，例如查询词、时间范围、主题等。
+- Markdown 富文本展示，包括表格、代码块、引用、标题和列表。
+- 多会话后台生成：当前会话生成中切到其他会话不会中断，右下角会提示后台会话仍在运行。
+- 自动滚动优化：用户查看历史消息时不会被流式输出强制拉回底部。
+
 当前已支持 Session Memory：当同一会话消息数达到阈值后，系统会自动把会话压缩成 `session_summaries`，后续问答使用“会话摘要 + 最近消息”作为上下文，避免长会话反复塞入全部历史。相关配置：
 
 ```env
@@ -280,11 +310,16 @@ VITE_API_BASE=http://localhost:8000
 |------|------|------|
 | POST | `/qa` | 检索问答（Phase 1-3），返回答案和引用来源 |
 | POST | `/agent/qa` | Agent 问答（Phase 4），返回答案和工具调用日志 |
+| POST | `/agent/qa/stream` | Agent 流式问答，返回 session、工具状态、token 和 done 事件 |
 | GET  | `/stats` | 全局数据统计，用于数据概览页 |
 | GET  | `/users` | 用户数据概览列表 |
 | GET  | `/users/{user_id}/meetings` | 指定用户的会议列表 |
 | GET  | `/sessions` | 会话列表，用于管理页查看聊天记录 |
+| GET  | `/agent/session/{session_id}` | 查看某个会话消息 |
 | GET  | `/agent/session/{session_id}/summary` | 查看某个会话的 Session Memory 摘要 |
+| GET  | `/agent/tasks` | 查看后台 Agent 任务列表 |
+| POST | `/agent/tasks` | 创建后台 Agent 任务 |
+| GET  | `/agent/tasks/{task_id}/events/stream` | 流式查看后台任务事件 |
 | GET  | `/meetings` | 会议列表，支持 `?user_id=` 过滤 |
 | GET  | `/meetings/{note_id}` | 单场会议详情 |
 | GET  | `/chunks/{chunk_id}` | 单个文本片段 |
@@ -381,7 +416,7 @@ MeetAgent/
   app/
     config.py              # 环境变量配置
     main.py                # FastAPI 服务入口
-    llm/client.py          # 大模型调用封装（chat / chat_json / chat_with_tools）
+    llm/client.py          # 大模型调用封装（chat / stream / tool calling / tool calling stream）
     storage/
       schema.sql           # 数据库表结构
       db.py                # 数据库连接
@@ -405,9 +440,17 @@ MeetAgent/
     agent/
       tools.py             # 工具定义（schema + 执行函数）
       loop.py              # Agent 主循环（function calling + 多轮历史）
+      tasks.py             # 后台 Agent 任务管理
+      task_worker.py       # 后台任务 worker
       ask.py               # 单次问答 CLI（Phase 4）
       chat.py              # 多轮对话 CLI（Phase 5A）
       session.py           # 服务端会话管理（HTTP 用）
+  frontend/
+    src/App.vue            # 前端会话状态、后台运行提示、布局
+    src/components/
+      ChatWindow.vue       # 聊天窗口、Markdown 渲染、工具步骤展示
+      AdminPage.vue        # 数据概览 / 管理页
+    src/api/agent.js       # 前端 API 和 SSE 客户端
   scripts/                 # 运维和调试工具脚本
   data/
     meetagent.db           # SQLite 数据库（自动生成）
@@ -435,5 +478,7 @@ MeetAgent/
 - [x] 阶段五B-4：Memory Retrieval（按需召回并注入 Agent，默认关闭）
 - [x] 阶段五B-5：会议结构化记忆沉淀为长期主题记忆
 - [x] 阶段五B-6：Trust Score 与清理脚本
+- [x] 前端增强：Markdown 表格渲染、工具步骤折叠、后台会话运行提示、流式滚动优化
+- [x] Agent 流式增强：工具调用后最终回答逐 token 输出
 - [ ] 阶段五B：跨会议记忆追踪
 

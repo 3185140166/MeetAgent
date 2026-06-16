@@ -97,8 +97,9 @@ TOOLS = [
         "function": {
             "name": "list_meetings",
             "description": (
-                "列出用户最近的会议清单（标题、时间、note_id）。"
-                "适用于'最近开了哪些会'或需要查找特定会议 note_id 时。"
+                "列出用户最近的会议清单（标题、时间、时长，并含内部 note_id 供后续工具调用）。"
+                "适用于'最近开了哪些会'或需要查找特定会议。"
+                "note_id 是内部标识，最终回答不要展示给用户。"
             ),
             "parameters": {
                 "type": "object",
@@ -510,8 +511,15 @@ def _tool_list_meetings(user_id: Optional[str], limit: int) -> str:
     lines = []
     for r in rows:
         dur = f" {int(r['duration_minutes'])}分钟" if r.get("duration_minutes") else ""
-        lines.append(f"• [{r['create_time'][:10]}]{dur} 《{r['title']}》  note_id={r['note_id']}")
-    return f"共 {len(rows)} 场会议（最近优先）：\n" + "\n".join(lines)
+        lines.append(
+            f"• [{r['create_time'][:10]}]{dur} 《{r['title']}》"
+            f"  （内部note_id={r['note_id']}，仅供工具调用，最终回答不要展示）"
+        )
+    return (
+        f"共 {len(rows)} 场会议（最近优先）。"
+        "最终回答请只展示序号、会议标题、日期、时长，不要展示 note_id：\n"
+        + "\n".join(lines)
+    )
 
 
 def _tool_get_meeting_detail(note_id: str, user_id: Optional[str], chunk_limit: int) -> str:

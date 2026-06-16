@@ -118,3 +118,85 @@ async def chat_with_tools(
         "finish_reason": choice.get("finish_reason", "stop"),
         "message": choice["message"],
     }
+
+
+async def chat_with_tools_stream(
+    messages: list[dict],
+    tools: list[dict],
+    temperature: float = 0.2,
+):
+    """支持 function calling 的流式对话。
+
+    yield:
+    - {"type": "content", "content": str}
+    - {"type": "tool_calls", "message": dict}
+    - {"type": "done"}
+    """
+    if not APIFUSION_API_KEY:
+        raise ValueError("APIFUSION_API_KEY 未设置，请检查 .env 文件")
+
+    payload = {
+        "model": APIFUSION_MODEL,
+        "messages": messages,
+        "tools": tools,
+        "temperature": temperature,
+        "stream": True,
+    }
+    headers = {
+        "Authorization": f"Bearer {APIFUSION_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    tool_calls: dict[int, dict] = {}
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        async with client.stream("POST", APIFUSION_API_URL, json=payload, headers=headers) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data = line[6:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data)
+                    choice = chunk["choices"][0]
+                    delta = choice.get("delta") or {}
+                except Exception:
+                    continue
+
+                content = delta.get("content")
+                if content:
+                    yield {"type": "content", "content": content}
+
+                for tc in delta.get("tool_calls") or []:
+                    index = int(tc.get("index", 0))
+                    current = tool_calls.setdefault(
+                        index,
+                        {
+                            "id": "",
+                            "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        },
+                    )
+                    if tc.get("id"):
+                        current["id"] = tc["id"]
+                    if tc.get("type"):
+                        current["type"] = tc["type"]
+                    fn = tc.get("function") or {}
+                    if fn.get("name"):
+                        current["function"]["name"] += fn["name"]
+                    if fn.get("arguments"):
+                        current["function"]["arguments"] += fn["arguments"]
+
+    if tool_calls:
+        yield {
+            "type": "tool_calls",
+            "message": {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [tool_calls[i] for i in sorted(tool_calls)],
+            },
+        }
+    else:
+        yield {"type": "done"}

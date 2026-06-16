@@ -1,7 +1,7 @@
 <template>
   <div class="chat-window">
     <!-- 消息列表 -->
-    <div class="messages" ref="messagesEl">
+    <div class="messages" ref="messagesEl" @scroll="updateAutoScrollState">
       <div v-if="messages.length === 0" class="empty-hint">
         <p>向 MeetAgent 提问吧</p>
         <p class="sub">例如：最近有哪些风险？ / 我有哪些待办事项？</p>
@@ -21,24 +21,41 @@
         <div v-else class="bubble assistant-bubble">
           <!-- 工具调用状态 -->
           <div v-if="msg.toolCalls.length" class="tool-calls">
-            <span
-              v-for="tc in msg.toolCalls"
-              :key="tc.tool + tc.status"
-              :class="['tool-badge', tc.status]"
+            <button
+              type="button"
+              class="tool-toggle"
+              @click="toggleTools(msg)"
             >
-              <span class="tool-icon">{{ tc.status === 'failed' ? '!' : tc.status === 'done' ? '✓' : '⟳' }}</span>
-              {{ toolLabel(tc.tool) }}
-            </span>
+              <span class="tool-toggle-left">
+                <span :class="['tool-toggle-dot', toolSummaryStatus(msg.toolCalls)]" aria-hidden="true"></span>
+                <span>{{ toolSummaryText(msg.toolCalls) }}</span>
+              </span>
+              <span class="tool-toggle-chevron">{{ msg.toolsExpanded ? '收起' : '展开' }}</span>
+            </button>
+
+            <div v-if="msg.toolsExpanded" class="tool-steps">
+              <div
+                v-for="tc in msg.toolCalls"
+                :key="tc.tool + tc.status"
+                :class="['tool-step', tc.status]"
+              >
+                <span class="tool-status-dot" aria-hidden="true"></span>
+                <span class="tool-copy">
+                  <span class="tool-title">{{ toolMeta(tc.tool).title }}</span>
+                  <span class="tool-desc">{{ toolDetailText(tc) }}</span>
+                </span>
+              </div>
+            </div>
           </div>
 
           <!-- 回答内容 -->
-          <div class="content" v-html="renderContent(msg.content)"></div>
+          <div class="content markdown-body" v-html="renderContent(msg.content)"></div>
           <span v-if="msg.streaming" class="cursor">▌</span>
         </div>
       </div>
 
       <!-- 加载中占位 -->
-      <div v-if="loading && !streamingMsg" class="message assistant">
+      <div v-if="loading && messages.length === 0" class="message assistant">
         <div class="bubble assistant-bubble loading">
           <span class="dot"></span><span class="dot"></span><span class="dot"></span>
         </div>
@@ -55,7 +72,7 @@
         rows="1"
         ref="inputEl"
       ></textarea>
-      <button @click="send" :disabled="loading || !input.trim()">
+      <button class="send-btn" @click="send" :disabled="loading || !input.trim()">
         {{ loading ? '…' : '发送' }}
       </button>
     </div>
@@ -63,116 +80,401 @@
 </template>
 
 <script setup>
-import { ref, reactive, watch, nextTick } from 'vue'
-import { streamChat } from '../api/agent.js'
+import { ref, watch, nextTick } from 'vue'
 
 const props = defineProps({
   sessionId: { type: String, default: null },
   userId: { type: String, default: '' },
-  initialMessages: { type: Array, default: () => [] },
+  messages: { type: Array, default: () => [] },
+  loading: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['session-created'])
+const emit = defineEmits(['send'])
 
-const messages = ref([...props.initialMessages])
 const input = ref('')
-const loading = ref(false)
-const streamingMsg = ref(null)
 const messagesEl = ref(null)
 const inputEl = ref(null)
+const shouldAutoScroll = ref(true)
+let scrollFrame = null
 
-let currentSessionId = props.sessionId
-
-// 工具名称映射
-const TOOL_LABELS = {
-  search_meetings: '搜索会议原文',
-  get_action_items: '查询待办事项',
-  get_decisions: '查询决策记录',
-  get_risks: '查询风险项',
-  get_meeting_summary: '获取会议摘要',
-  list_meetings: '列出会议清单',
-  get_meeting_detail: '获取会议详情',
-  search_by_time_range: '按时间搜索',
-  get_topic_history: '追踪主题历史',
-  generate_weekly_report: '生成周报素材',
-  web_search: '联网搜索',
+// 工具状态展示：后端 Agent 每次调用工具时，前端把它渲染成执行步骤。
+const TOOL_META = {
+  search_meetings: {
+    title: '检索会议原文',
+    description: '从转写片段中查找相关讨论',
+  },
+  get_action_items: {
+    title: '整理待办事项',
+    description: '读取负责人、截止时间和任务内容',
+  },
+  get_decisions: {
+    title: '提取决策记录',
+    description: '查找会议中已经确定的结论',
+  },
+  get_risks: {
+    title: '排查风险项',
+    description: '汇总会议里提到的问题和阻塞',
+  },
+  get_meeting_summary: {
+    title: '读取会议摘要',
+    description: '获取主题、摘要和核心要点',
+  },
+  list_meetings: {
+    title: '列出相关会议',
+    description: '按时间筛选可参考的会议记录',
+  },
+  get_meeting_detail: {
+    title: '展开会议详情',
+    description: '读取摘要、结构化记忆和原文片段',
+  },
+  search_by_time_range: {
+    title: '按时间范围检索',
+    description: '在指定日期范围内查找会议内容',
+  },
+  get_topic_history: {
+    title: '追踪主题历史',
+    description: '按时间线梳理相关讨论',
+  },
+  generate_weekly_report: {
+    title: '生成周报素材',
+    description: '汇总会议摘要、待办、决策和风险',
+  },
+  web_search: {
+    title: '联网补充信息',
+    description: '搜索会议库之外的外部资料',
+  },
 }
-const toolLabel = (name) => TOOL_LABELS[name] || name
+const toolMeta = (name) => TOOL_META[name] || {
+  title: name,
+  description: '执行内部工具调用',
+}
+const toolStatusText = (status) => {
+  if (status === 'failed') return '调用失败'
+  if (status === 'done') return '已完成'
+  return '正在执行'
+}
+const toolSummaryStatus = (toolCalls) => {
+  if (toolCalls.some((tc) => tc.status === 'failed')) return 'failed'
+  if (toolCalls.some((tc) => tc.status === 'running')) return 'running'
+  return 'done'
+}
+const toolSummaryText = (toolCalls) => {
+  const running = toolCalls.filter((tc) => tc.status === 'running').length
+  const failed = toolCalls.filter((tc) => tc.status === 'failed').length
+  if (running) return `正在执行 ${running} 个步骤，已记录 ${toolCalls.length} 个工具调用`
+  if (failed) return `执行了 ${toolCalls.length} 个步骤，其中 ${failed} 个失败`
+  return `已执行 ${toolCalls.length} 个步骤`
+}
 
-// 简单 Markdown：换行和粗体
+function compactValue(value, maxLength = 72) {
+  if (value === null || value === undefined || value === '') return ''
+  const text = String(value)
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text
+}
+
+function toolArgumentSummary(toolCall) {
+  const args = toolCall.arguments || {}
+  switch (toolCall.tool) {
+    case 'search_meetings':
+    case 'web_search':
+      return compactValue(args.query) ? `查询：${compactValue(args.query)}` : ''
+    case 'get_action_items':
+    case 'get_decisions':
+    case 'get_risks':
+      return compactValue(args.keyword) ? `关键词：${compactValue(args.keyword)}` : ''
+    case 'list_meetings':
+      return args.limit ? `数量：${args.limit}` : ''
+    case 'get_meeting_summary':
+    case 'get_meeting_detail':
+      return compactValue(args.note_id, 36) ? `会议ID：${compactValue(args.note_id, 36)}` : ''
+    case 'search_by_time_range': {
+      const range = [args.start || '最早', args.end || '最新'].join(' 至 ')
+      const query = compactValue(args.query)
+      return query ? `范围：${range}；查询：${query}` : `范围：${range}`
+    }
+    case 'get_topic_history':
+      return compactValue(args.topic) ? `主题：${compactValue(args.topic)}` : ''
+    case 'generate_weekly_report':
+      return `范围：${args.start || '最早'} 至 ${args.end || '最新'}`
+    default:
+      return ''
+  }
+}
+
+function toolDetailText(toolCall) {
+  const parts = [
+    toolStatusText(toolCall.status),
+    toolMeta(toolCall.tool).description,
+  ]
+  const args = toolArgumentSummary(toolCall)
+  if (args) parts.push(args)
+  return parts.join(' · ')
+}
+
+function toggleTools(msg) {
+  msg.toolsExpanded = !msg.toolsExpanded
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+function safeUrl(url) {
+  const trimmed = url.trim()
+  if (/^(https?:\/\/|mailto:)/i.test(trimmed)) return escapeHtml(trimmed)
+  if (/^[#/]/.test(trimmed)) return escapeHtml(trimmed)
+  return '#'
+}
+
+function renderInlineMarkdown(value) {
+  return escapeHtml(value)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) => {
+      return `<a href="${safeUrl(url)}" target="_blank" rel="noreferrer">${label}</a>`
+    })
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
+    .replace(/(^|[^_])_([^_\n]+)_/g, '$1<em>$2</em>')
+}
+
+function closeList(state, html) {
+  if (state.listType) {
+    html.push(`</${state.listType}>`)
+    state.listType = ''
+  }
+}
+
+function flushParagraph(state, html) {
+  if (state.paragraph.length) {
+    html.push(`<p>${renderInlineMarkdown(state.paragraph.join(' '))}</p>`)
+    state.paragraph = []
+  }
+}
+
+function isTableSeparatorCell(value) {
+  return /^:?-{3,}:?$/.test(value.trim())
+}
+
+function isTableSeparatorLine(line) {
+  const cells = splitTableRow(line)
+  return cells.length > 0 && cells.every(isTableSeparatorCell)
+}
+
+function splitTableRow(line) {
+  return line
+    .trim()
+    .replace(/^\|/, '')
+    .replace(/\|$/, '')
+    .split('|')
+    .map((cell) => cell.trim())
+}
+
+function tableCellClass(header) {
+  const normalized = header.trim().toLowerCase()
+  if (['序号', '编号', 'no', 'id'].includes(normalized)) return 'col-index'
+  if (normalized.includes('标题') || normalized.includes('title')) return 'col-title'
+  if (normalized.includes('日期') || normalized.includes('date')) return 'col-date'
+  if (normalized.includes('时长') || normalized.includes('duration')) return 'col-duration'
+  if (normalized.includes('note_id') || normalized.includes('note id')) return 'col-note-id'
+  return ''
+}
+
+function renderTable(rows) {
+  if (rows.length < 2 || !isTableSeparatorLine(rows[1])) return ''
+  const header = splitTableRow(rows[0])
+  const bodyRows = rows
+    .slice(2)
+    .filter((row) => row.trim() && !isTableSeparatorLine(row))
+    .map(splitTableRow)
+
+  const classes = header.map(tableCellClass)
+  const headHtml = header
+    .map((cell, index) => `<th class="${classes[index]}">${renderInlineMarkdown(cell)}</th>`)
+    .join('')
+  const bodyHtml = bodyRows
+    .map((row) => {
+      const cells = header
+        .map((_, index) => `<td class="${classes[index]}">${renderInlineMarkdown(row[index] || '')}</td>`)
+        .join('')
+      return `<tr>${cells}</tr>`
+    })
+    .join('')
+
+  return `<div class="table-wrap"><table><thead><tr>${headHtml}</tr></thead><tbody>${bodyHtml}</tbody></table></div>`
+}
+
+function normalizeCompactTableLine(line) {
+  if ((line.match(/\|/g) || []).length < 6) return line
+
+  const cells = splitTableRow(line).filter(Boolean)
+  const separatorStart = cells.findIndex((cell, index) => {
+    return index > 0 && isTableSeparatorCell(cell) && isTableSeparatorCell(cells[index + 1] || '')
+  })
+
+  if (separatorStart <= 0) return line
+
+  const columnCount = separatorStart
+  const header = cells.slice(0, columnCount)
+  const separators = cells.slice(separatorStart, separatorStart + columnCount)
+  const body = cells.slice(separatorStart + columnCount)
+  if (separators.length !== columnCount || body.length < columnCount) return line
+
+  const lines = [
+    `| ${header.join(' | ')} |`,
+    `| ${separators.join(' | ')} |`,
+  ]
+
+  for (let index = 0; index < body.length; index += columnCount) {
+    const row = body.slice(index, index + columnCount)
+    if (row.length === columnCount) lines.push(`| ${row.join(' | ')} |`)
+  }
+
+  return lines.join('\n')
+}
+
+function normalizeMarkdown(text) {
+  return String(text)
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map(normalizeCompactTableLine)
+    .join('\n')
+}
+
+// 支持常用 Markdown：标题、列表、表格、分割线、引用、代码块、链接、粗体、斜体、行内代码。
 function renderContent(text) {
   if (!text) return ''
-  return text
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\n/g, '<br>')
+
+  const lines = normalizeMarkdown(text).split('\n')
+  const html = []
+  const state = { paragraph: [], listType: '', inCode: false, codeLines: [] }
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    const fence = line.match(/^```/)
+    if (fence) {
+      if (state.inCode) {
+        html.push(`<pre><code>${escapeHtml(state.codeLines.join('\n'))}</code></pre>`)
+        state.inCode = false
+        state.codeLines = []
+      } else {
+        flushParagraph(state, html)
+        closeList(state, html)
+        state.inCode = true
+      }
+      continue
+    }
+
+    if (state.inCode) {
+      state.codeLines.push(line)
+      continue
+    }
+
+    if (!line.trim()) {
+      flushParagraph(state, html)
+      closeList(state, html)
+      continue
+    }
+
+    if (/^\s{0,3}(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      flushParagraph(state, html)
+      closeList(state, html)
+      html.push('<hr>')
+      continue
+    }
+
+    if (line.includes('|') && isTableSeparatorLine(lines[index + 1] || '')) {
+      flushParagraph(state, html)
+      closeList(state, html)
+      const tableLines = [line, lines[index + 1]]
+      index += 2
+      while (index < lines.length && lines[index].includes('|') && lines[index].trim()) {
+        tableLines.push(lines[index])
+        index += 1
+      }
+      index -= 1
+      html.push(renderTable(tableLines))
+      continue
+    }
+
+    const heading = line.match(/^(#{1,6})\s+(.+)$/)
+    if (heading) {
+      flushParagraph(state, html)
+      closeList(state, html)
+      const level = heading[1].length
+      html.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`)
+      continue
+    }
+
+    const quote = line.match(/^>\s?(.+)$/)
+    if (quote) {
+      flushParagraph(state, html)
+      closeList(state, html)
+      html.push(`<blockquote>${renderInlineMarkdown(quote[1])}</blockquote>`)
+      continue
+    }
+
+    const unordered = line.match(/^\s*[-*+]\s+(.+)$/)
+    const ordered = line.match(/^\s*\d+\.\s+(.+)$/)
+    if (unordered || ordered) {
+      flushParagraph(state, html)
+      const nextType = unordered ? 'ul' : 'ol'
+      if (state.listType !== nextType) {
+        closeList(state, html)
+        html.push(`<${nextType}>`)
+        state.listType = nextType
+      }
+      html.push(`<li>${renderInlineMarkdown((unordered || ordered)[1])}</li>`)
+      continue
+    }
+
+    closeList(state, html)
+    state.paragraph.push(line.trim())
+  }
+
+  if (state.inCode) html.push(`<pre><code>${escapeHtml(state.codeLines.join('\n'))}</code></pre>`)
+  flushParagraph(state, html)
+  closeList(state, html)
+  return html.join('')
 }
 
 function scrollToBottom() {
-  nextTick(() => {
+  if (scrollFrame) cancelAnimationFrame(scrollFrame)
+  scrollFrame = requestAnimationFrame(() => {
     if (messagesEl.value)
       messagesEl.value.scrollTop = messagesEl.value.scrollHeight
+    scrollFrame = null
   })
 }
 
-watch(messages, scrollToBottom, { deep: true })
+function updateAutoScrollState() {
+  const el = messagesEl.value
+  if (!el) return
+  const distanceToBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+  shouldAutoScroll.value = distanceToBottom < 96
+}
+
+function scrollToBottomIfNeeded() {
+  if (shouldAutoScroll.value) scrollToBottom()
+}
+
+watch(() => props.messages.length, scrollToBottomIfNeeded)
+watch(
+  () => props.messages.map((msg) => `${msg.id}:${msg.content.length}`).join('|'),
+  scrollToBottomIfNeeded,
+)
 
 async function send() {
   const q = input.value.trim()
-  if (!q || loading.value) return
-
-  // 追加用户消息
-  messages.value.push({ id: Date.now(), role: 'user', content: q, toolCalls: [] })
+  if (!q || props.loading) return
   input.value = ''
-  loading.value = true
-
-  // 助手消息占位：用 reactive() 确保后续的属性修改能被 Vue 追踪
-  const assistantMsg = reactive({
-    id: Date.now() + 1,
-    role: 'assistant',
-    content: '',
-    toolCalls: [],
-    streaming: true,
-  })
-  messages.value.push(assistantMsg)
-  streamingMsg.value = assistantMsg
-
-  try {
-    for await (const event of streamChat({
-      question: q,
-      userId: props.userId,
-      sessionId: currentSessionId,
-    })) {
-      if (event.type === 'session_id') {
-        currentSessionId = event.session_id
-        emit('session-created', event.session_id, q)
-
-      } else if (event.type === 'tool_start') {
-        assistantMsg.toolCalls.push({ tool: event.tool, status: 'running' })
-
-      } else if (event.type === 'tool_done') {
-        const tc = assistantMsg.toolCalls.find(t => t.tool === event.tool && t.status === 'running')
-        if (tc) tc.status = event.failed ? 'failed' : 'done'
-
-      } else if (event.type === 'token') {
-        assistantMsg.content += event.content
-
-      } else if (event.type === 'done') {
-        assistantMsg.streaming = false
-
-      } else if (event.type === 'error') {
-        assistantMsg.content = `出错了：${event.message}`
-        assistantMsg.streaming = false
-      }
-      scrollToBottom()
-    }
-  } catch (e) {
-    assistantMsg.content = `网络错误：${e.message}`
-    assistantMsg.streaming = false
-  }
-
-  streamingMsg.value = null
-  loading.value = false
+  shouldAutoScroll.value = true
+  emit('send', q)
   nextTick(() => inputEl.value?.focus())
 }
 </script>
@@ -182,70 +484,199 @@ async function send() {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-height: 0;
+  min-width: 0;
+  background: rgba(248, 250, 252, 0.72);
 }
 
 .messages {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  padding: 24px 16px;
+  padding: 28px clamp(18px, 4vw, 52px);
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 18px;
+  scroll-behavior: auto;
 }
 
 .empty-hint {
   margin: auto;
   text-align: center;
-  color: #999;
+  color: #475569;
+  padding: 34px 38px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(18px);
 }
-.empty-hint .sub { font-size: 13px; margin-top: 6px; }
+.empty-hint p:first-child {
+  font-size: 20px;
+  font-weight: 700;
+  color: #0f172a;
+}
+.empty-hint .sub { font-size: 13px; margin-top: 8px; }
 
 .message { display: flex; }
 .message.user  { justify-content: flex-end; }
 .message.assistant { justify-content: flex-start; }
 
 .bubble {
-  max-width: 72%;
-  padding: 12px 16px;
+  max-width: min(980px, 82%);
+  padding: 13px 16px;
   border-radius: 16px;
   font-size: 14px;
-  line-height: 1.6;
+  line-height: 1.7;
   word-break: break-word;
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.08);
 }
 
 .user-bubble {
-  background: #2563eb;
+  background: linear-gradient(135deg, #2563eb, #0ea5a3);
   color: #fff;
-  border-bottom-right-radius: 4px;
+  border-bottom-right-radius: 6px;
 }
 
 .assistant-bubble {
-  background: #f3f4f6;
-  color: #111;
-  border-bottom-left-radius: 4px;
+  background: rgba(255, 255, 255, 0.86);
+  color: #172033;
+  border: 1px solid rgba(255, 255, 255, 0.76);
+  border-bottom-left-radius: 6px;
+  backdrop-filter: blur(18px);
 }
 
 .tool-calls {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 8px;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
 }
 
-.tool-badge {
-  display: inline-flex;
+.tool-toggle {
+  display: flex;
+  width: 100%;
   align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  padding: 2px 8px;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid rgba(203, 213, 225, 0.7);
   border-radius: 12px;
-  background: #dbeafe;
-  color: #1d4ed8;
+  background: rgba(248, 250, 252, 0.78);
+  color: #475569;
+  cursor: pointer;
+  transition: background 0.18s, border-color 0.18s;
 }
-.tool-badge.done { background: #dcfce7; color: #15803d; }
-.tool-badge.failed { background: #fee2e2; color: #b91c1c; }
 
-.tool-icon { font-size: 11px; }
+.tool-toggle:hover {
+  background: rgba(241, 245, 249, 0.95);
+  border-color: rgba(148, 163, 184, 0.78);
+}
+
+.tool-toggle-left {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.tool-toggle-dot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.12);
+}
+
+.tool-toggle-dot.running {
+  background: #2563eb;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+  animation: pulse-dot 1.2s ease-in-out infinite;
+}
+
+.tool-toggle-dot.failed {
+  background: #ef4444;
+  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.12);
+}
+
+.tool-toggle-chevron {
+  flex: 0 0 auto;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.tool-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tool-step {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 9px 11px;
+  border: 1px solid rgba(203, 213, 225, 0.72);
+  border-radius: 12px;
+  background: rgba(248, 250, 252, 0.76);
+}
+
+.tool-status-dot {
+  width: 8px;
+  height: 8px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: #2563eb;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+}
+
+.tool-step.running .tool-status-dot {
+  animation: pulse-dot 1.2s ease-in-out infinite;
+}
+
+.tool-step.done .tool-status-dot {
+  background: #10b981;
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.12);
+}
+
+.tool-step.failed .tool-status-dot {
+  background: #ef4444;
+  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.12);
+}
+
+.tool-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tool-title {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.tool-desc {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+@keyframes pulse-dot {
+  0%, 100% {
+    opacity: 0.72;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+}
 
 .cursor {
   display: inline-block;
@@ -271,38 +702,191 @@ async function send() {
 
 .input-area {
   display: flex;
+  flex-shrink: 0;
   gap: 10px;
-  padding: 16px;
-  border-top: 1px solid #e5e7eb;
-  background: #fff;
+  padding: 18px clamp(18px, 4vw, 56px) 22px;
+  border-top: 1px solid rgba(226, 232, 240, 0.76);
+  background: rgba(255, 255, 255, 0.58);
+  backdrop-filter: blur(22px);
 }
 
 textarea {
   flex: 1;
-  padding: 10px 14px;
-  border: 1px solid #d1d5db;
-  border-radius: 10px;
+  min-height: 44px;
+  padding: 12px 14px;
+  border: 1px solid rgba(203, 213, 225, 0.9);
+  border-radius: 12px;
   resize: none;
   font-size: 14px;
   font-family: inherit;
   outline: none;
-  transition: border-color 0.2s;
+  transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
   max-height: 120px;
+  background: rgba(255, 255, 255, 0.86);
+  color: #0f172a;
 }
-textarea:focus { border-color: #2563eb; }
+textarea:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
+}
 textarea:disabled { background: #f9fafb; }
 
-button {
-  padding: 10px 20px;
-  background: #2563eb;
+.send-btn {
+  min-width: 72px;
+  padding: 0 20px;
+  background: #1f2937;
   color: #fff;
   border: none;
-  border-radius: 10px;
+  border-radius: 12px;
   font-size: 14px;
+  font-weight: 600;
   cursor: pointer;
-  transition: background 0.2s;
+  transition: background 0.2s, transform 0.2s, box-shadow 0.2s;
+  white-space: nowrap;
+  box-shadow: 0 10px 24px rgba(17, 24, 39, 0.18);
+}
+.send-btn:hover:not(:disabled) {
+  background: #0f766e;
+  transform: translateY(-1px);
+}
+.send-btn:disabled {
+  background: #cbd5e1;
+  color: #64748b;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.markdown-body :deep(p) { margin: 0 0 10px; }
+.markdown-body :deep(p:last-child) { margin-bottom: 0; }
+.markdown-body :deep(h1),
+.markdown-body :deep(h2),
+.markdown-body :deep(h3),
+.markdown-body :deep(h4),
+.markdown-body :deep(h5),
+.markdown-body :deep(h6) {
+  margin: 14px 0 8px;
+  color: #0f172a;
+  line-height: 1.3;
+  font-weight: 750;
+}
+.markdown-body :deep(h1:first-child),
+.markdown-body :deep(h2:first-child),
+.markdown-body :deep(h3:first-child) { margin-top: 0; }
+.markdown-body :deep(h1) { font-size: 22px; }
+.markdown-body :deep(h2) { font-size: 19px; }
+.markdown-body :deep(h3) { font-size: 16px; }
+.markdown-body :deep(h4),
+.markdown-body :deep(h5),
+.markdown-body :deep(h6) { font-size: 14px; }
+.markdown-body :deep(ul),
+.markdown-body :deep(ol) {
+  margin: 8px 0 10px 22px;
+  padding: 0;
+}
+.markdown-body :deep(li) { margin: 4px 0; }
+.markdown-body :deep(blockquote) {
+  margin: 10px 0;
+  padding: 8px 12px;
+  border-left: 3px solid #14b8a6;
+  background: #f0fdfa;
+  color: #334155;
+}
+.markdown-body :deep(hr) {
+  height: 1px;
+  margin: 16px 0;
+  border: 0;
+  background: linear-gradient(90deg, transparent, #cbd5e1, transparent);
+}
+.markdown-body :deep(.table-wrap) {
+  max-width: 100%;
+  margin: 12px 0;
+  overflow-x: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+}
+.markdown-body :deep(table) {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  table-layout: auto;
+}
+.markdown-body :deep(th),
+.markdown-body :deep(td) {
+  padding: 9px 12px;
+  border-bottom: 1px solid #e2e8f0;
+  text-align: left;
+  vertical-align: top;
+}
+.markdown-body :deep(th) {
+  background: #f8fafc;
+  color: #334155;
+  font-weight: 700;
+}
+.markdown-body :deep(th.col-index),
+.markdown-body :deep(td.col-index) {
+  width: 1%;
+  min-width: 46px;
+  text-align: center;
+  color: #64748b;
   white-space: nowrap;
 }
-button:hover:not(:disabled) { background: #1d4ed8; }
-button:disabled { background: #93c5fd; cursor: not-allowed; }
+.markdown-body :deep(th.col-title),
+.markdown-body :deep(td.col-title) {
+  min-width: 180px;
+  max-width: 360px;
+  white-space: normal;
+}
+.markdown-body :deep(th.col-date),
+.markdown-body :deep(td.col-date),
+.markdown-body :deep(th.col-duration),
+.markdown-body :deep(td.col-duration) {
+  width: 1%;
+  white-space: nowrap;
+}
+.markdown-body :deep(th.col-note-id),
+.markdown-body :deep(td.col-note-id) {
+  width: 1%;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.markdown-body :deep(tr:last-child td) { border-bottom: 0; }
+.markdown-body :deep(pre) {
+  margin: 12px 0;
+  padding: 12px 14px;
+  overflow-x: auto;
+  border-radius: 8px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.markdown-body :deep(code) {
+  padding: 2px 5px;
+  border-radius: 5px;
+  background: #eef2f7;
+  color: #0f172a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+}
+.markdown-body :deep(pre code) {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+}
+.markdown-body :deep(a) {
+  color: #0f766e;
+  font-weight: 600;
+  text-decoration: none;
+}
+.markdown-body :deep(a:hover) { text-decoration: underline; }
+
+@media (max-width: 720px) {
+  .messages { padding: 20px 14px; }
+  .bubble { max-width: 92%; }
+  .input-area { padding: 12px; }
+  .send-btn { min-width: 64px; padding: 0 14px; }
+}
 </style>
