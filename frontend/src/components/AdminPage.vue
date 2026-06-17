@@ -335,6 +335,7 @@ import {
   getStats,
   getUsers,
   getUserMeetings,
+  getVectorStats,
   openAgentTaskEventStream,
   recoverAgentTasks,
   retryAgentTask,
@@ -411,12 +412,28 @@ async function loadAll() {
     users.value = usersData
     await Promise.all([loadSessions(), loadMemories(), loadTasks()])
     if (!selectedUserId.value && usersData.length) {
-      await selectUser(usersData[0].user_id)
+      await selectUser(usersData[0].user_id, { reloadRelated: false })
     }
+    loadVectorStats()
   } catch (e) {
     error.value = `加载失败：${e.message}`
   } finally {
     loading.value = false
+  }
+}
+
+async function loadVectorStats() {
+  try {
+    const data = await getVectorStats()
+    stats.value = {
+      ...(stats.value || {}),
+      vector_index_count: data.vector_index_count,
+    }
+  } catch {
+    stats.value = {
+      ...(stats.value || {}),
+      vector_index_count: null,
+    }
   }
 }
 
@@ -431,10 +448,11 @@ async function loadSessions() {
   }
 }
 
-async function selectUser(userId) {
+async function selectUser(userId, options = {}) {
+  const { reloadRelated = true } = options
   selectedUserId.value = userId
   meetings.value = []
-  await Promise.all([loadMemories(), loadTasks()])
+  if (reloadRelated) await Promise.all([loadMemories(), loadTasks()])
   if (!userId) return
   loadingMeetings.value = true
   try {

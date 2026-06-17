@@ -199,3 +199,28 @@ CREATE TABLE IF NOT EXISTS agent_task_events (
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_task_events_task ON agent_task_events(task_id, id);
+
+-- ========== Agent Eval Samples: logs for evaluation and training export ==========
+
+CREATE TABLE IF NOT EXISTS agent_eval_samples (
+  sample_id TEXT PRIMARY KEY,
+  session_id TEXT,
+  user_id TEXT,
+  question TEXT NOT NULL,
+  tool_trace TEXT,
+  tool_results TEXT,
+  sources TEXT,
+  draft_answer TEXT,
+  final_answer TEXT,
+  verification TEXT,
+  passed INTEGER DEFAULT 0,
+  sample_type TEXT,
+  quality_score REAL DEFAULT 0,
+  review_status TEXT DEFAULT 'pending',
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(session_id) REFERENCES chat_sessions(session_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_eval_samples_user ON agent_eval_samples(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_agent_eval_samples_review ON agent_eval_samples(review_status, quality_score);
+CREATE INDEX IF NOT EXISTS idx_agent_eval_samples_type ON agent_eval_samples(sample_type, passed);

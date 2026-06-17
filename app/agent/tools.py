@@ -30,6 +30,32 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "multi_search_meetings",
+            "description": (
+                "针对复杂、抽象、跨会议、口语化或语义模糊的会议问题，"
+                "使用多个语义相关 query 检索会议原文，并在工具内部完成去重、RRF 融合排序和统一返回。"
+                "当用户要求归纳观点、论据、案例、历史讨论或跨会议总结时优先使用。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "queries": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "3-6 个不同表达角度的检索 query",
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "description": "最终返回片段数量，默认 8，最大 12",
+                    },
+                },
+                "required": ["queries"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_action_items",
             "description": (
                 "获取结构化待办事项列表（含负责人、截止日期）。"
@@ -224,6 +250,12 @@ TOOLS = [
 
 # ---------- 工具执行 ----------
 
+TOOLS[0]["function"]["description"] += (
+    " 本工具只用于简单、明确、单点查询；复杂主题、跨会议总结、论据/案例归纳、"
+    "口语化或语义模糊问题应优先使用 multi_search_meetings。"
+)
+
+
 def _fmt_rows(rows, fields) -> str:
     if not rows:
         return "（无记录）"
@@ -241,6 +273,12 @@ def execute_tool(name: str, arguments: dict, user_id: Optional[str]) -> str:
 def execute_tool_structured(name: str, arguments: dict, user_id: Optional[str]) -> ToolResult:
     if name == "search_meetings":
         return _tool_search_meetings_structured(arguments.get("query", ""), user_id)
+    if name == "multi_search_meetings":
+        return _tool_multi_search_meetings_structured(
+            arguments.get("queries") or [],
+            user_id,
+            arguments.get("top_k", 8),
+        )
     if name == "get_action_items":
         return _tool_get_action_items_structured(user_id, arguments.get("keyword"))
     if name == "get_decisions":
@@ -406,6 +444,112 @@ def _tool_search_meetings_structured(query: str, user_id: Optional[str]) -> Tool
 
 def _tool_get_action_items(user_id: Optional[str], keyword: Optional[str]) -> str:
     return _tool_get_action_items_structured(user_id, keyword).text_for_llm
+
+
+def _search_meeting_hits(query: str, user_id: Optional[str], top_k: int) -> list[dict]:
+    if ENABLE_HYBRID_SEARCH:
+        try:
+            from app.embed.vector_store import count
+            if count() > 0:
+                from app.search.hybrid import search as hybrid_search
+                return hybrid_search(query, user_id=user_id, top_k=top_k)
+            raise Exception("no vectors")
+        except Exception:
+            from app.search.bm25 import search as bm25_search
+            return bm25_search(query, user_id=user_id, top_k=top_k)
+
+    from app.search.bm25 import search as bm25_search
+    return bm25_search(query, user_id=user_id, top_k=top_k)
+
+
+def _format_meeting_hits(tool_name: str, hits: list[dict], queries: Optional[list[str]] = None) -> ToolResult:
+    if not hits:
+        return ToolResult(
+            ok=True,
+            tool=tool_name,
+            text_for_llm="未找到相关会议片段。",
+            data=[],
+            sources=[],
+        )
+
+    parts = []
+    sources = []
+    if queries:
+        parts.append("检索 query：\n" + "\n".join(f"- {query}" for query in queries))
+    for i, h in enumerate(hits, 1):
+        source_id = f"S{i}"
+        score = h.get("multi_rrf_score") or h.get("rerank_score") or h.get("rrf_score") or h.get("score")
+        source = _source_from_row(source_id, h, quote=h.get("text", ""), score=score)
+        sources.append(source)
+        parts.append(
+            f"[{source_id}] 会议：{h.get('title', '')} | 时间：{h.get('create_time', '')} | "
+            f"发言人：{h.get('speaker', '')}\n{h.get('text', '')}"
+        )
+    return ToolResult(
+        ok=True,
+        tool=tool_name,
+        text_for_llm="\n\n".join(parts),
+        data=hits,
+        sources=sources,
+    )
+
+
+def _tool_search_meetings_structured(query: str, user_id: Optional[str]) -> ToolResult:
+    hits = _search_meeting_hits(query, user_id=user_id, top_k=5)
+    return _format_meeting_hits("search_meetings", hits)
+
+
+def _tool_multi_search_meetings_structured(
+    queries: list,
+    user_id: Optional[str],
+    top_k,
+) -> ToolResult:
+    clean_queries = []
+    seen_queries = set()
+    for query in queries or []:
+        query = str(query or "").strip()
+        if not query or query in seen_queries:
+            continue
+        seen_queries.add(query)
+        clean_queries.append(query)
+        if len(clean_queries) >= 6:
+            break
+
+    if not clean_queries:
+        return ToolResult(
+            ok=True,
+            tool="multi_search_meetings",
+            text_for_llm="请提供至少一个检索 query。",
+            data=[],
+            sources=[],
+        )
+
+    top_k = _safe_limit(top_k, 8, 12)
+    scores: dict[str, float] = {}
+    hits_by_chunk: dict[str, dict] = {}
+    query_hits: dict[str, list[str]] = {}
+
+    for query in clean_queries:
+        hits = _search_meeting_hits(query, user_id=user_id, top_k=top_k * 2)
+        for rank, hit in enumerate(hits, 1):
+            chunk_id = hit.get("chunk_id") or f"{hit.get('note_id', '')}:{hit.get('text', '')[:80]}"
+            scores[chunk_id] = scores.get(chunk_id, 0.0) + 1 / (60 + rank)
+            if chunk_id not in hits_by_chunk:
+                hits_by_chunk[chunk_id] = dict(hit)
+                query_hits[chunk_id] = []
+            query_hits[chunk_id].append(query)
+
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)[:top_k]
+    merged_hits = []
+    for chunk_id, score in ranked:
+        hit = dict(hits_by_chunk[chunk_id])
+        hit["multi_rrf_score"] = score
+        hit["matched_queries"] = query_hits.get(chunk_id, [])
+        merged_hits.append(hit)
+
+    result = _format_meeting_hits("multi_search_meetings", merged_hits, queries=clean_queries)
+    result.data = {"queries": clean_queries, "hits": merged_hits}
+    return result
 
 
 def _tool_get_action_items_structured(user_id: Optional[str], keyword: Optional[str]) -> ToolResult:

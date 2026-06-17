@@ -171,7 +171,11 @@ async function switchSession(s) {
       sources: m.sources || [],
       verification: m.verification || null,
       toolCalls: m.tool_calls
-        ? m.tool_calls.map(tc => ({ tool: tc.tool, arguments: tc.arguments || {}, status: 'done' }))
+        ? m.tool_calls.map(tc => ({
+            tool: tc.tool,
+            arguments: tc.arguments || {},
+            status: tc.status || (tc.failed ? 'failed' : 'done'),
+          }))
         : [],
       toolsExpanded: false,
       streaming: false,
@@ -239,7 +243,7 @@ async function sendMessage(question) {
 
       } else if (event.type === 'tool_done') {
         const tc = assistantMsg.toolCalls.find(t => t.tool === event.tool && t.status === 'running')
-        if (tc) tc.status = event.failed ? 'failed' : 'done'
+        if (tc) tc.status = event.status || (event.failed ? 'failed' : 'done')
 
       } else if (event.type === 'token') {
         assistantMsg.content += event.content

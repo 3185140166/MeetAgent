@@ -66,6 +66,10 @@ export function getStats() {
   return getJson('/stats')
 }
 
+export function getVectorStats() {
+  return getJson('/vector/stats')
+}
+
 export function getUsers() {
   return getJson('/users')
 }

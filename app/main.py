@@ -71,6 +71,7 @@ class ToolCallItem(BaseModel):
     arguments: dict
     result_preview: str
     failed: bool = False
+    status: str = "done"
 
 
 class AgentResponse(BaseModel):
@@ -161,6 +162,34 @@ def _schedule_memory_stop_hooks(
     task.add_done_callback(_consume_result)
 
 
+def _record_agent_eval_sample(
+    *,
+    session_id: str,
+    user_id: Optional[str],
+    question: str,
+    answer: str,
+    tool_calls_log: list,
+    sources: list,
+    verification: Optional[dict],
+    draft_answer: Optional[str] = None,
+) -> None:
+    """Persist eval/training sample. Failures must not break chat."""
+    try:
+        from app.agent.eval_samples import create_eval_sample
+        create_eval_sample(
+            session_id=session_id,
+            user_id=user_id,
+            question=question,
+            tool_calls_log=tool_calls_log or [],
+            sources=sources or [],
+            draft_answer=draft_answer or answer,
+            final_answer=answer,
+            verification=verification or {},
+        )
+    except Exception:
+        pass
+
+
 # ---------- 路由 ----------
 
 @app.post("/agent/qa", response_model=AgentResponse)
@@ -183,6 +212,16 @@ async def agent_qa(req: AgentRequest):
         result["answer"],
         result["tool_calls_log"],
         verification=result.get("verification"),
+    )
+    _record_agent_eval_sample(
+        session_id=session_id,
+        user_id=req.user_id,
+        question=req.question,
+        answer=result["answer"],
+        tool_calls_log=result["tool_calls_log"],
+        sources=result.get("sources", []),
+        verification=result.get("verification"),
+        draft_answer=result.get("draft_answer"),
     )
     _schedule_memory_stop_hooks(
         session_id=session_id,
@@ -265,6 +304,16 @@ async def agent_qa_stream(req: AgentRequest):
                 answer,
                 tool_calls_log,
                 verification=verification,
+            )
+            _record_agent_eval_sample(
+                session_id=session_id,
+                user_id=req.user_id,
+                question=req.question,
+                answer=answer,
+                tool_calls_log=tool_calls_log,
+                sources=sources,
+                verification=verification,
+                draft_answer=answer,
             )
             _schedule_memory_stop_hooks(
                 session_id=session_id,
@@ -426,7 +475,7 @@ async def qa(req: QARequest):
 
 
 @app.get("/stats")
-def get_stats():
+def get_stats(include_vector: bool = False):
     conn = get_connection()
     row = conn.execute(
         """
@@ -446,8 +495,13 @@ def get_stats():
     ).fetchone()
     conn.close()
     data = dict(row)
-    data["vector_index_count"] = _vector_index_count()
+    data["vector_index_count"] = _vector_index_count() if include_vector else None
     return data
+
+
+@app.get("/vector/stats")
+def get_vector_stats():
+    return {"vector_index_count": _vector_index_count()}
 
 
 @app.get("/config/status")

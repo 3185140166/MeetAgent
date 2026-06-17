@@ -52,8 +52,16 @@
           <div class="content markdown-body" v-html="renderContent(msg.content)"></div>
           <div v-if="msg.sources?.length" class="source-list">
             <div class="source-list-title">引用来源</div>
+            <button
+              v-if="msg.sources.length > SOURCE_PREVIEW_LIMIT"
+              type="button"
+              class="source-toggle"
+              @click="toggleSources(msg)"
+            >
+              {{ msg.sourcesExpanded ? '收起' : `查看全部 ${msg.sources.length} 条` }}
+            </button>
             <div
-              v-for="source in msg.sources"
+              v-for="source in visibleSources(msg)"
               :key="source.source_id + source.chunk_id + source.quote"
               class="source-item"
             >
@@ -112,12 +120,17 @@ const messagesEl = ref(null)
 const inputEl = ref(null)
 const shouldAutoScroll = ref(true)
 let scrollFrame = null
+const SOURCE_PREVIEW_LIMIT = 3
 
 // 工具状态展示：后端 Agent 每次调用工具时，前端把它渲染成执行步骤。
 const TOOL_META = {
   search_meetings: {
     title: '检索会议原文',
     description: '从转写片段中查找相关讨论',
+  },
+  multi_search_meetings: {
+    title: '多角度检索会议原文',
+    description: '用多个语义 query 融合召回相关讨论',
   },
   get_action_items: {
     title: '整理待办事项',
@@ -165,6 +178,7 @@ const toolMeta = (name) => TOOL_META[name] || {
   description: '执行内部工具调用',
 }
 const toolStatusText = (status) => {
+  if (status === 'blocked') return '已停止继续检索'
   if (status === 'failed') return '调用失败'
   if (status === 'done') return '已完成'
   return '正在执行'
@@ -172,13 +186,16 @@ const toolStatusText = (status) => {
 const toolSummaryStatus = (toolCalls) => {
   if (toolCalls.some((tc) => tc.status === 'failed')) return 'failed'
   if (toolCalls.some((tc) => tc.status === 'running')) return 'running'
+  if (toolCalls.some((tc) => tc.status === 'blocked')) return 'blocked'
   return 'done'
 }
 const toolSummaryText = (toolCalls) => {
   const running = toolCalls.filter((tc) => tc.status === 'running').length
   const failed = toolCalls.filter((tc) => tc.status === 'failed').length
+  const blocked = toolCalls.filter((tc) => tc.status === 'blocked').length
   if (running) return `正在执行 ${running} 个步骤，已记录 ${toolCalls.length} 个工具调用`
   if (failed) return `执行了 ${toolCalls.length} 个步骤，其中 ${failed} 个失败`
+  if (blocked) return `执行了 ${toolCalls.length} 个步骤，已停止 ${blocked} 个继续检索请求`
   return `已执行 ${toolCalls.length} 个步骤`
 }
 
@@ -198,6 +215,12 @@ function toolArgumentSummary(toolCall) {
     case 'search_meetings':
     case 'web_search':
       return compactValue(args.query) ? `查询：${compactValue(args.query)}` : ''
+    case 'multi_search_meetings': {
+      const queries = Array.isArray(args.queries) ? args.queries.filter(Boolean) : []
+      const text = queries.slice(0, 3).join('；')
+      const suffix = queries.length > 3 ? ` 等 ${queries.length} 个查询` : ''
+      return text ? `查询：${compactValue(text + suffix)}` : ''
+    }
     case 'get_action_items':
     case 'get_decisions':
     case 'get_risks':
@@ -233,6 +256,15 @@ function toolDetailText(toolCall) {
 
 function toggleTools(msg) {
   msg.toolsExpanded = !msg.toolsExpanded
+}
+
+function visibleSources(msg) {
+  const sources = msg.sources || []
+  return msg.sourcesExpanded ? sources : sources.slice(0, SOURCE_PREVIEW_LIMIT)
+}
+
+function toggleSources(msg) {
+  msg.sourcesExpanded = !msg.sourcesExpanded
 }
 
 function escapeHtml(value) {
@@ -563,17 +595,24 @@ async function send() {
 }
 
 .assistant-bubble {
-  background: #fff;
+  max-width: min(980px, 88%);
+  padding: 2px 0;
+  background: transparent;
   color: #172033;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  border-bottom-left-radius: 6px;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .tool-calls {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  margin-bottom: 12px;
+  gap: 0;
+  margin-bottom: 14px;
+  border: 1px solid rgba(226, 232, 240, 0.72);
+  border-radius: 10px;
+  background: rgba(248, 250, 252, 0.55);
+  overflow: hidden;
 }
 
 .tool-toggle {
@@ -582,18 +621,17 @@ async function send() {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px 10px;
-  border: 1px solid rgba(203, 213, 225, 0.7);
-  border-radius: 12px;
-  background: rgba(248, 250, 252, 0.78);
+  padding: 8px 11px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   color: #475569;
   cursor: pointer;
   transition: background 0.18s, border-color 0.18s;
 }
 
 .tool-toggle:hover {
-  background: rgba(241, 245, 249, 0.95);
-  border-color: rgba(148, 163, 184, 0.78);
+  background: rgba(241, 245, 249, 0.9);
 }
 
 .tool-toggle-left {
@@ -625,6 +663,11 @@ async function send() {
   box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.12);
 }
 
+.tool-toggle-dot.blocked {
+  background: #f59e0b;
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.14);
+}
+
 .tool-toggle-chevron {
   flex: 0 0 auto;
   color: #64748b;
@@ -634,7 +677,8 @@ async function send() {
 .tool-steps {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 0;
+  border-top: 1px solid rgba(226, 232, 240, 0.72);
 }
 
 .tool-step {
@@ -643,9 +687,19 @@ async function send() {
   gap: 10px;
   align-items: start;
   padding: 9px 11px;
-  border: 1px solid rgba(203, 213, 225, 0.72);
-  border-radius: 12px;
-  background: rgba(248, 250, 252, 0.76);
+  border: 0;
+  border-top: 1px solid rgba(226, 232, 240, 0.55);
+  background: transparent;
+  transition: background 0.16s, border-color 0.16s;
+}
+
+.tool-step:first-child {
+  border-top: 0;
+}
+
+.tool-step:hover {
+  background: rgba(241, 245, 249, 0.9);
+  border-color: rgba(203, 213, 225, 0.9);
 }
 
 .tool-status-dot {
@@ -669,6 +723,11 @@ async function send() {
 .tool-step.failed .tool-status-dot {
   background: #ef4444;
   box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.12);
+}
+
+.tool-step.blocked .tool-status-dot {
+  background: #f59e0b;
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.14);
 }
 
 .tool-copy {
@@ -917,6 +976,24 @@ textarea:disabled { background: #f9fafb; }
   color: #334155;
   font-size: 12px;
   font-weight: 750;
+}
+
+.source-toggle {
+  display: inline-flex;
+  width: fit-content;
+  margin: -2px 0 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #0f766e;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.source-toggle:hover {
+  color: #115e59;
+  text-decoration: underline;
 }
 
 .source-item {

@@ -54,14 +54,38 @@ def _execute_tool_with_guard(
 
 
 def _renumber_sources(result: ToolResult, all_sources: list[Source]) -> ToolResult:
+    existing = {_source_dedupe_key(source): source for source in all_sources}
+    deduped_sources: list[Source] = []
     for source in result.sources:
         old_id = source.source_id
-        new_id = f"S{len(all_sources) + 1}"
-        source.source_id = new_id
+        key = _source_dedupe_key(source)
+        existing_source = existing.get(key)
+        if existing_source:
+            new_id = existing_source.source_id
+        else:
+            new_id = f"S{len(all_sources) + 1}"
+            source.source_id = new_id
+            all_sources.append(source)
+            existing[key] = source
+            deduped_sources.append(source)
         if old_id:
             result.text_for_llm = result.text_for_llm.replace(f"[{old_id}]", f"[{new_id}]")
-        all_sources.append(source)
+    result.sources = deduped_sources
     return result
+
+
+def _source_dedupe_key(source: Source) -> tuple:
+    if source.chunk_id:
+        return ("chunk", source.chunk_id)
+    if source.note_id and source.quote:
+        return ("note_quote", source.note_id, source.quote)
+    return (
+        "fallback",
+        source.meeting_title,
+        source.create_time,
+        source.speaker,
+        source.quote,
+    )
 
 
 async def _verify_and_maybe_rewrite(
@@ -70,7 +94,8 @@ async def _verify_and_maybe_rewrite(
     sources: list[dict],
     tool_calls_log: list[dict],
     rewrite: bool,
-) -> tuple[str, dict]:
+) -> tuple[str, dict, str]:
+    draft_answer = answer
     verification = await verify_answer(
         question=question,
         answer=answer,
@@ -90,7 +115,7 @@ async def _verify_and_maybe_rewrite(
             sources=sources,
             tool_logs=tool_calls_log,
         )
-    return answer, verification
+    return answer, verification, draft_answer
 
 
 SYSTEM_PROMPT = """你是一个会议智能助手，可以调用工具来查询用户的会议数据后回答问题。
@@ -117,6 +142,17 @@ SYSTEM_PROMPT = """你是一个会议智能助手，可以调用工具来查询�
 6. note_id、user_id、chunk_id 等是系统内部标识，只能用于继续调用工具，不要在最终回答中展示给用户；除非用户明确要求查看内部ID。
 7. 列出会议清单时，用序号、会议标题、日期、时长等用户可理解字段，不要把 note_id 作为表格列或正文字段展示。
 8. 回答外部搜索信息时必须列出 URL 来源；如果问题要求最新信息，还要优先使用带 time_range 或日期范围的 web_search 结果，并在回答中说明搜索的时间范围。"""
+
+
+SYSTEM_PROMPT += """
+
+补充规则：
+- search_meetings 只用于简单、明确、单点的会议原文查询；同一轮不要连续多次调用 search_meetings。
+- multi_search_meetings 用于复杂、抽象、跨会议、口语化或语义模糊的问题，尤其是用户要求归纳观点、论据、案例、历史讨论或跨会议总结时。
+- 对复杂问题，优先一次生成 3-6 个不同表达角度的 query 调用 multi_search_meetings；不要把这些 query 拆成多次 search_meetings。
+- 如果第一轮 multi_search_meetings 明显缺少某个方向的证据，可以再补充一次 multi_search_meetings；第二次之后必须基于已有来源归纳回答。
+- multi_search_meetings 返回足够证据后，应直接基于来源归纳回答；只有用户指定某场会议或确实需要展开单场细节时，才补充调用 get_meeting_detail。
+"""
 
 
 async def run_agent(
@@ -160,6 +196,7 @@ async def run_agent(
                     args = {}
 
                 result, failed = _execute_tool_with_guard(tool_name, args, user_id, failure_counts)
+                status = "failed" if failed else "done"
                 result = _renumber_sources(result, all_sources)
 
                 tool_calls_log.append({
@@ -168,6 +205,7 @@ async def run_agent(
                     "arguments": args,
                     "result_preview": result.text_for_llm[:200],
                     "failed": failed,
+                    "status": status,
                     "sources": result.sources_as_dict(),
                 })
 
@@ -179,7 +217,7 @@ async def run_agent(
         else:
             answer = msg.get("content", "")
             sources = [source.to_dict() for source in all_sources]
-            answer, verification = await _verify_and_maybe_rewrite(
+            answer, verification, draft_answer = await _verify_and_maybe_rewrite(
                 question=question,
                 answer=answer,
                 sources=sources,
@@ -195,12 +233,13 @@ async def run_agent(
                 "tool_calls_log": tool_calls_log,
                 "sources": sources,
                 "verification": verification,
+                "draft_answer": draft_answer,
                 "history": new_history,
             }
 
     answer = "抱歉，未能在有限步骤内完成回答，请重新提问或换一种描述方式。"
     sources = [source.to_dict() for source in all_sources]
-    answer, verification = await _verify_and_maybe_rewrite(
+    answer, verification, draft_answer = await _verify_and_maybe_rewrite(
         question=question,
         answer=answer,
         sources=sources,
@@ -212,6 +251,7 @@ async def run_agent(
         "tool_calls_log": tool_calls_log,
         "sources": sources,
         "verification": verification,
+        "draft_answer": draft_answer,
         "history": history + [
             {"role": "user", "content": question},
             {"role": "assistant", "content": answer},
@@ -246,6 +286,7 @@ async def run_agent_stream(
     tool_calls_log = []
     failure_counts: dict[str, int] = {}
     all_sources: list[Source] = []
+    answer_parts: list[str] = []
 
     for turn in range(max_turns):
         tool_message = None
@@ -287,6 +328,7 @@ async def run_agent_stream(
             yield {"type": "tool_start", "tool": tool_name, "arguments": args}
 
             result, failed = _execute_tool_with_guard(tool_name, args, user_id, failure_counts)
+            status = "failed" if failed else "done"
             result = _renumber_sources(result, all_sources)
             tool_calls_log.append({
                 "turn": turn + 1,
@@ -294,15 +336,21 @@ async def run_agent_stream(
                 "arguments": args,
                 "result_preview": result.text_for_llm[:200],
                 "failed": failed,
+                "status": status,
                 "sources": result.sources_as_dict(),
             })
 
-            yield {"type": "tool_done", "tool": tool_name, "preview": result.text_for_llm[:100], "failed": failed}
+            yield {
+                "type": "tool_done",
+                "tool": tool_name,
+                "preview": result.text_for_llm[:100],
+                "failed": failed,
+                "status": status,
+            }
 
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc["id"],
                 "content": result.text_for_llm,
             })
-
     yield {"type": "error", "message": "超过最大工具调用轮次，请重新提问"}
