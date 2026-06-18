@@ -390,8 +390,16 @@ function normalizeCompactTableLine(line) {
   return lines.join('\n')
 }
 
+function normalizeHeadingBreaks(text) {
+  return String(text).replace(/([^\n])(\s*)(#{1,6}\s+)(?=\S)/g, (match, before, space, heading) => {
+    if (before === '#' || before === '`') return match
+    const separator = /[。！？；.!?;:：）)]$/.test(before) ? '\n\n' : '\n'
+    return `${before}${separator}${heading}`
+  })
+}
+
 function normalizeMarkdown(text) {
-  return String(text)
+  return normalizeHeadingBreaks(text)
     .replace(/\r\n?/g, '\n')
     .split('\n')
     .map(normalizeCompactTableLine)

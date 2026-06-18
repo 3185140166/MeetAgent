@@ -1,0 +1,14 @@
+{
+  "dataset": "algorithm_lab/datasets/meeting_retrieval_eval.example.jsonl",
+  "baselines": [
+    "bm25",
+    "multi_query_bm25",
+    "hybrid_rrf",
+    "multi_query_hybrid"
+  ],
+  "top_k": 8,
+  "notes": [
+    "hybrid_rrf and multi_query_hybrid require a built vector index.",
+    "The example dataset uses relevant_keywords as weak labels. Add note_id/chunk_id labels for stronger evaluation."
+  ]
+}

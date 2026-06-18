@@ -1,5 +1,6 @@
 # 环境变量（含 API Key，绝对不能提交）
 .env
+algorithm_lab/.env
 
 # 虚拟环境
 .venv/
@@ -43,6 +44,10 @@ tests/
 
 # 临时文件
 _*.txt
+
+# Algorithm Lab 本地实验配置与报告
+algorithm_lab/configs/*.local.json
+algorithm_lab/reports/*.json
 
 # 本地私有文档（不公开）
 docs/
