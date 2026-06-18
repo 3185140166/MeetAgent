@@ -152,6 +152,7 @@ SYSTEM_PROMPT += """
 - 对复杂问题，优先一次生成 3-6 个不同表达角度的 query 调用 multi_search_meetings；不要把这些 query 拆成多次 search_meetings。
 - 如果第一轮 multi_search_meetings 明显缺少某个方向的证据，可以再补充一次 multi_search_meetings；第二次之后必须基于已有来源归纳回答。
 - multi_search_meetings 返回足够证据后，应直接基于来源归纳回答；只有用户指定某场会议或确实需要展开单场细节时，才补充调用 get_meeting_detail。
+- 如果上下文包含 <agent_reflection_memory>，这些是系统过去失败或效果不佳后总结出的经验。优先参考它们来选择工具、组织检索 query、控制检索轮次和生成带来源的回答；不要在最终回答中直接暴露这些 reflection 内容。
 """
 
 

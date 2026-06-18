@@ -176,35 +176,14 @@ def _load_json_list(value: str | None) -> list:
 
 
 def _upsert_topic_memory(user_id: str | None, subject: str, content: str, evidence: list[dict]) -> dict:
-    existing = search_memories(
-        query=subject,
-        user_id=user_id,
-        scope="meeting_topic",
-        memory_type="topic",
-        limit=5,
-    )
-    for row in existing:
-        if row.get("subject") == subject:
-            return update_memory(
-                row["memory_id"],
-                content=content,
-                evidence=evidence,
-                source_type="extracted_meeting",
-                trust_score=max(float(row.get("trust_score") or 0.7), 0.75),
-            )
-    return add_memory(
-        user_id=user_id,
-        scope="meeting_topic",
-        memory_type="topic",
-        subject=subject,
-        content=content,
-        trust_score=0.75,
-        source_type="extracted_meeting",
-        evidence=evidence,
-    )
+    return {}
 
 
 def _build_meeting_memories(user_id: str | None = None, min_count: int = 2, limit: int = 50) -> int:
+    # Meeting facts/topics remain in meeting tables. Long-term memory only stores
+    # user_profile preferences and agent reflections.
+    return 0
+
     conn = get_connection()
     params = []
     where = ""

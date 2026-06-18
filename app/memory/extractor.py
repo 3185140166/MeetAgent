@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Stop-hook long-term memory extraction."""
+"""Stop-hook user profile extraction."""
 
 from typing import Optional
 
@@ -10,11 +10,11 @@ from app.config import (
 )
 from app.llm.client import chat_json
 from app.memory.prompts import build_memory_extraction_messages, build_memory_update_messages
-from app.memory.store import add_memory, find_similar_memories, mark_deprecated, update_memory
+from app.memory.store import add_memory, mark_deprecated, search_memories, update_memory
 
 
 def should_extract_memory(question: str, answer: str, tool_calls_log: list) -> bool:
-    """轻量规则：明显无长期价值的问题先跳过，减少 LLM 调用。"""
+    """Only extract long-term user profile when the turn has explicit value."""
     text = f"{question}\n{answer}".lower()
     triggers = (
         "记住",
@@ -22,19 +22,15 @@ def should_extract_memory(question: str, answer: str, tool_calls_log: list) -> b
         "偏好",
         "我喜欢",
         "我不喜欢",
-        "这个项目",
-        "项目使用",
-        "约定",
-        "长期",
+        "按我的",
+        "用户画像",
+        "长期记住",
         "不要忘",
+        "约定",
         "remember",
         "preference",
     )
-    if any(t in text for t in triggers):
-        return True
-    if tool_calls_log:
-        return any(call.get("tool") in ("get_topic_history", "generate_weekly_report") for call in tool_calls_log)
-    return False
+    return any(trigger in text for trigger in triggers)
 
 
 def _clamp_confidence(value) -> float:
@@ -50,7 +46,7 @@ async def _decide_memory_update(candidate: dict, existing: list[dict]) -> dict:
             "action": "ADD",
             "target_memory_id": "",
             "content": candidate.get("content", ""),
-            "reason": "无相似旧记忆",
+            "reason": "无旧 user_profile",
         }
     data = await chat_json(build_memory_update_messages(candidate, existing), temperature=0.0)
     action = (data.get("action") or "ADD").strip().upper()
@@ -73,24 +69,37 @@ async def store_memory_candidate(
     answer: str,
     tool_calls_log: list,
 ) -> Optional[dict]:
-    """Store one candidate using ADD/UPDATE/REPLACE/IGNORE semantics."""
+    """Store one candidate as the single user profile memory."""
     confidence = _clamp_confidence(candidate.get("confidence", 0))
     content = (candidate.get("content") or "").strip()
     if confidence < MEMORY_EXTRACTION_MIN_CONFIDENCE or not content:
         return None
 
-    scope = candidate.get("scope") or "user"
-    memory_type = candidate.get("memory_type") or "fact"
-    subject = candidate.get("subject") or ""
-    similar = find_similar_memories(
-        user_id=user_id,
-        subject=subject,
-        content=content,
-        scope=scope,
-        memory_type=memory_type,
-        limit=5,
+    scope = "user"
+    memory_type = "preference"
+    subject = "user_profile"
+    existing_profiles = [
+        row for row in search_memories(
+            query="",
+            user_id=user_id,
+            include_inactive=False,
+            scope=scope,
+            memory_type=memory_type,
+            limit=20,
+        )
+        if row.get("subject") == subject
+    ]
+    similar = existing_profiles[:1]
+    decision = await _decide_memory_update(
+        {
+            **candidate,
+            "scope": scope,
+            "memory_type": memory_type,
+            "subject": subject,
+            "content": content,
+        },
+        similar,
     )
-    decision = await _decide_memory_update(candidate, similar)
     action = decision["action"]
     final_content = (decision.get("content") or content).strip()
 
@@ -108,6 +117,8 @@ async def store_memory_candidate(
         return update_memory(
             decision["target_memory_id"],
             content=final_content,
+            scope=scope,
+            memory_type=memory_type,
             subject=subject,
             trust_score=max(confidence, 0.7),
             evidence=evidence,
@@ -143,7 +154,7 @@ async def extract_and_store_memories(
     session_summary: str = "",
     force: bool = False,
 ) -> list[dict]:
-    """从一轮对话抽取长期记忆并写入 memories。失败由调用方捕获。"""
+    """Extract and store a compact user profile after a turn."""
     if not MEMORY_EXTRACTION_ENABLED and not force:
         return []
     if not force and not should_extract_memory(question, answer, tool_calls_log):

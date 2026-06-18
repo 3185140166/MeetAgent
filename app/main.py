@@ -107,14 +107,21 @@ async def _run_memory_stop_hooks(
     question: str,
     answer: str,
     tool_calls_log: list,
+    sources: Optional[list] = None,
+    verification: Optional[dict] = None,
+    draft_answer: Optional[str] = None,
 ) -> dict:
     """Run post-answer memory hooks. Hook failures must not break chat."""
     from app.agent import session as sess
     from app.memory.extractor import extract_and_store_memories
+    from app.memory.feedback import store_feedback_reflections
+    from app.memory.reflexion import store_reflections
 
     result = {
         "session_summary_updated": False,
         "memories_extracted": 0,
+        "reflections_stored": 0,
+        "feedback_reflections_stored": 0,
     }
     try:
         result["session_summary_updated"] = await sess.maybe_update_summary(session_id)
@@ -134,6 +141,35 @@ async def _run_memory_stop_hooks(
         result["memories_extracted"] = len(memories)
     except Exception:
         result["memories_extracted"] = 0
+
+    try:
+        reflections = await store_reflections(
+            session_id=session_id,
+            user_id=user_id,
+            question=question,
+            answer=answer,
+            tool_calls_log=tool_calls_log,
+            sources=sources or [],
+            verification=verification,
+            draft_answer=draft_answer,
+        )
+        result["reflections_stored"] = len(reflections)
+    except Exception:
+        result["reflections_stored"] = 0
+
+    try:
+        feedback_reflections = await store_feedback_reflections(
+            session_id=session_id,
+            user_id=user_id,
+            question=question,
+            answer=answer,
+            tool_calls_log=tool_calls_log,
+            sources=sources or [],
+            verification=verification,
+        )
+        result["feedback_reflections_stored"] = len(feedback_reflections)
+    except Exception:
+        result["feedback_reflections_stored"] = 0
     return result
 
 
@@ -143,6 +179,9 @@ def _schedule_memory_stop_hooks(
     question: str,
     answer: str,
     tool_calls_log: list,
+    sources: Optional[list] = None,
+    verification: Optional[dict] = None,
+    draft_answer: Optional[str] = None,
 ) -> None:
     """Run memory hooks in the background so chat responses are not blocked."""
     task = asyncio.create_task(_run_memory_stop_hooks(
@@ -151,6 +190,9 @@ def _schedule_memory_stop_hooks(
         question=question,
         answer=answer,
         tool_calls_log=tool_calls_log,
+        sources=sources,
+        verification=verification,
+        draft_answer=draft_answer,
     ))
 
     def _consume_result(done_task: asyncio.Task) -> None:
@@ -229,6 +271,9 @@ async def agent_qa(req: AgentRequest):
         question=req.question,
         answer=result["answer"],
         tool_calls_log=result["tool_calls_log"],
+        sources=result.get("sources", []),
+        verification=result.get("verification"),
+        draft_answer=result.get("draft_answer"),
     )
     return {
         "answer": result["answer"],
@@ -321,6 +366,9 @@ async def agent_qa_stream(req: AgentRequest):
                 question=req.question,
                 answer=answer,
                 tool_calls_log=tool_calls_log,
+                sources=sources,
+                verification=verification,
+                draft_answer=answer,
             )
 
     return StreamingResponse(

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""查看或搜索长期记忆。"""
+"""List or search long-term memories."""
 
 import argparse
 import io
@@ -25,21 +25,21 @@ def print_memory(memory: dict) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="查看或搜索长期记忆")
-    parser.add_argument("--user-id", type=str, default=None, help="用户 ID")
-    parser.add_argument("--query", type=str, default="", help="搜索关键词")
+    parser = argparse.ArgumentParser(description="List or search long-term memories")
+    parser.add_argument("--user-id", type=str, default=None, help="User ID")
+    parser.add_argument("--query", type=str, default="", help="Search query")
     parser.add_argument("--scope", type=str, default=None, help="user / project / meeting_topic")
-    parser.add_argument("--type", type=str, default=None, help="preference / fact / task / topic / decision / risk")
-    parser.add_argument("--include-inactive", action="store_true", help="包含 deprecated / deleted / expired")
-    parser.add_argument("--limit", type=int, default=20, help="显示数量")
-    parser.add_argument("--rebuild-fts", action="store_true", help="重建 memory_fts 后退出")
+    parser.add_argument("--type", type=str, default=None, help="preference / reflection")
+    parser.add_argument("--include-inactive", action="store_true", help="Include inactive memories")
+    parser.add_argument("--limit", type=int, default=20, help="Limit")
+    parser.add_argument("--rebuild-fts", action="store_true", help="Rebuild memory_fts then exit")
     args = parser.parse_args()
 
     init_db()
 
     if args.rebuild_fts:
         count = rebuild_fts()
-        print(f"memory_fts 已重建：{count} 条 active memory")
+        print(f"rebuilt memory_fts: {count} active memories")
         sys.exit(0)
 
     if args.query:
@@ -58,6 +58,6 @@ if __name__ == "__main__":
             limit=args.limit,
         )
 
-    print(f"共 {len(rows)} 条\n")
+    print(f"total {len(rows)}\n")
     for memory in rows:
         print_memory(memory)

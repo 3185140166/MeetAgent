@@ -45,6 +45,19 @@ MEMORY_EXTRACTION_MAX_MEMORIES: int = int(os.environ.get("MEMORY_EXTRACTION_MAX_
 MEMORY_EXTRACTION_MIN_CONFIDENCE: float = float(os.environ.get("MEMORY_EXTRACTION_MIN_CONFIDENCE", "0.65"))
 MEMORY_RETRIEVAL_ENABLED: bool = os.environ.get("MEMORY_RETRIEVAL_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 MEMORY_RETRIEVAL_TOP_K: int = int(os.environ.get("MEMORY_RETRIEVAL_TOP_K", "5"))
+MEMORY_RETRIEVAL_ALWAYS_ON: bool = os.environ.get("MEMORY_RETRIEVAL_ALWAYS_ON", "true").lower() in ("1", "true", "yes", "on")
+MEMORY_PREFERENCE_TOP_K: int = int(os.environ.get("MEMORY_PREFERENCE_TOP_K", "2"))
+MEMORY_GATE_ENABLED: bool = os.environ.get("MEMORY_GATE_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+MEMORY_GATE_STRICT_MIN_TRUST: float = float(os.environ.get("MEMORY_GATE_STRICT_MIN_TRUST", "0.70"))
+MEMORY_GATE_LOOSE_MIN_TRUST: float = float(os.environ.get("MEMORY_GATE_LOOSE_MIN_TRUST", "0.45"))
+MEMORY_GATE_CANDIDATE_MULTIPLIER: int = int(os.environ.get("MEMORY_GATE_CANDIDATE_MULTIPLIER", "4"))
+
+# Reflexion Memory: store reusable agent self-improvement lessons after bad turns.
+REFLEXION_ENABLED: bool = os.environ.get("REFLEXION_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+REFLEXION_ON_VERIFIER_FAIL_ONLY: bool = os.environ.get("REFLEXION_ON_VERIFIER_FAIL_ONLY", "false").lower() in ("1", "true", "yes", "on")
+REFLEXION_MIN_CONFIDENCE: float = float(os.environ.get("REFLEXION_MIN_CONFIDENCE", "0.70"))
+REFLEXION_MAX_REFLECTIONS: int = int(os.environ.get("REFLEXION_MAX_REFLECTIONS", "2"))
+REFLEXION_RETRIEVAL_TOP_K: int = int(os.environ.get("REFLEXION_RETRIEVAL_TOP_K", "3"))
 
 # Trusted Agent verifier. Keep enabled by default for agent QA, but fail open if
 # the verifier model call has an error.

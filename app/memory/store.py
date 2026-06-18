@@ -12,7 +12,7 @@ ACTIVE_STATUS = "active"
 INACTIVE_STATUSES = {"deprecated", "deleted", "expired"}
 VALID_STATUSES = {ACTIVE_STATUS, *INACTIVE_STATUSES}
 VALID_SCOPES = {"user", "project", "meeting_topic"}
-VALID_MEMORY_TYPES = {"preference", "fact", "task", "topic", "decision", "risk"}
+VALID_MEMORY_TYPES = {"preference", "reflection"}
 
 
 def _now() -> str:
@@ -35,7 +35,7 @@ def _normalize_scope(scope: str) -> str:
 
 
 def _normalize_memory_type(memory_type: str) -> str:
-    memory_type = (memory_type or "fact").strip()
+    memory_type = (memory_type or "preference").strip()
     if memory_type not in VALID_MEMORY_TYPES:
         raise ValueError(f"memory_type 只支持: {', '.join(sorted(VALID_MEMORY_TYPES))}")
     return memory_type
@@ -62,7 +62,7 @@ def add_memory(
     user_id: Optional[str],
     content: str,
     scope: str = "user",
-    memory_type: str = "fact",
+    memory_type: str = "preference",
     subject: str = "",
     trust_score: float = 0.7,
     source_type: str = "manual",

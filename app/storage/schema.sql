@@ -122,7 +122,7 @@ CREATE TABLE IF NOT EXISTS memories (
   memory_id TEXT PRIMARY KEY,
   user_id TEXT,
   scope TEXT NOT NULL,          -- user / project / meeting_topic
-  memory_type TEXT NOT NULL,    -- preference / fact / task / topic / decision / risk
+  memory_type TEXT NOT NULL,    -- preference / reflection
   subject TEXT,
   content TEXT NOT NULL,
   status TEXT DEFAULT 'active', -- active / deprecated / deleted / expired
