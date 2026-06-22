@@ -28,17 +28,17 @@ def _tokenize(text: str) -> str:
     return " ".join(tokens)
 
 
-def search(
-    query: str,
+def _search_match(
+    match_query: str,
     user_id: Optional[str] = None,
     top_k: int = TOP_K,
 ) -> List[Dict]:
-    query_tokens = _tokenize(query)
-    if not query_tokens:
+    match_query = (match_query or "").strip()
+    if not match_query:
         return []
 
     conn = get_connection()
-    params: list = [query_tokens]
+    params: list = [match_query]
 
     user_filter = ""
     if user_id:
@@ -70,3 +70,21 @@ def search(
     rows = conn.execute(sql, params).fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+def search_match_query(
+    match_query: str,
+    user_id: Optional[str] = None,
+    top_k: int = TOP_K,
+) -> List[Dict]:
+    """Search with a prebuilt SQLite FTS5 MATCH query."""
+    return _search_match(match_query, user_id=user_id, top_k=top_k)
+
+
+def search(
+    query: str,
+    user_id: Optional[str] = None,
+    top_k: int = TOP_K,
+) -> List[Dict]:
+    query_tokens = _tokenize(query)
+    return _search_match(query_tokens, user_id=user_id, top_k=top_k)

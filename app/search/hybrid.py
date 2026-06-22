@@ -5,11 +5,11 @@ RRF (Reciprocal Rank Fusion)：score = Σ 1 / (k + rank)，k=60 是经验常数�
 两路各取 top_k * 2，融合后返回 top_k 个结果。
 """
 from typing import List, Dict, Optional
-from app.search.bm25 import search as bm25_search
+from app.search.bm25 import search as bm25_search, search_match_query as bm25_search_match_query
 from app.embed.encoder import embed_one
 from app.embed.vector_store import search as vec_search
 from app.storage.db import get_connection
-from app.config import TOP_K
+from app.config import ENABLE_LLM_SPARSE_QUERY, TOP_K
 
 _RRF_K = 60
 
@@ -57,8 +57,20 @@ def search(
 ) -> List[Dict]:
     fetch_k = top_k * 2
 
-    bm25_hits = bm25_search(query, user_id=user_id, top_k=fetch_k)
+    if ENABLE_LLM_SPARSE_QUERY:
+        from app.search.sparse_query import build_llm_sparse_match_query
+
+        match_query, sparse_terms = build_llm_sparse_match_query(query)
+        bm25_hits = bm25_search_match_query(match_query, user_id=user_id, top_k=fetch_k)
+        for hit in bm25_hits:
+            hit["sparse_query"] = match_query
+            hit["sparse_terms"] = sparse_terms
+    else:
+        bm25_hits = bm25_search(query, user_id=user_id, top_k=fetch_k)
+
     query_vec = embed_one(query)
     vec_hits = vec_search(query_vec, user_id=user_id, top_k=fetch_k)
+    for hit in vec_hits:
+        hit["semantic_query"] = query
 
     return _rrf_merge(bm25_hits, vec_hits, top_k)

@@ -52,3 +52,7 @@ algorithm_lab/reports/*.json
 # 本地私有文档（不公开）
 docs/
 CURRENT_PROJECT_STATE.md
+
+# Local retrieval dataset review artifacts
+algorithm_lab/datasets/*draft*.jsonl
+algorithm_lab/datasets/*review_work*.jsonl

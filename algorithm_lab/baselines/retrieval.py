@@ -5,10 +5,6 @@ from __future__ import annotations
 
 from typing import Callable, Iterable
 
-from app.search.bm25 import search as bm25_search
-from app.search.hybrid import search as hybrid_search
-
-
 RRF_K = 60
 
 
@@ -53,10 +49,14 @@ def _rrf_merge(query_hits: list[tuple[str, list[dict]]], top_k: int) -> list[dic
 
 
 def bm25(query: str, user_id: str | None = None, top_k: int = 8) -> list[dict]:
+    from app.search.bm25 import search as bm25_search
+
     return _dedupe_hits(bm25_search(query, user_id=user_id, top_k=top_k))
 
 
 def hybrid_rrf(query: str, user_id: str | None = None, top_k: int = 8) -> list[dict]:
+    from app.search.hybrid import search as hybrid_search
+
     return _dedupe_hits(hybrid_search(query, user_id=user_id, top_k=top_k))
 
 

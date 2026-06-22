@@ -12,6 +12,8 @@ APIFUSION_MODEL: str = os.environ.get("APIFUSION_MODEL", "gpt-5.5")
 DB_PATH: str = os.environ.get("DB_PATH", "data/meetagent.db")
 TOP_K: int = int(os.environ.get("TOP_K", "8"))
 ENABLE_HYBRID_SEARCH: bool = os.environ.get("ENABLE_HYBRID_SEARCH", "false").lower() in ("1", "true", "yes", "on")
+ENABLE_LLM_SPARSE_QUERY: bool = os.environ.get("ENABLE_LLM_SPARSE_QUERY", "false").lower() in ("1", "true", "yes", "on")
+LLM_SPARSE_QUERY_MAX_TERMS: int = int(os.environ.get("LLM_SPARSE_QUERY_MAX_TERMS", "8"))
 
 # 第二阶段：结构化抽取
 EXTRACT_WINDOW_CHARS: int = int(os.environ.get("EXTRACT_WINDOW_CHARS", "6000"))
