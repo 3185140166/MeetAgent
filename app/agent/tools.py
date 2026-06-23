@@ -56,6 +56,66 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "query_meeting_records",
+            "description": (
+                "统一查询会议数据库中的结构化记录和受限原文片段。适用于待办、决策、风险、会议摘要、"
+                "会议列表、会议详情、主题历史、时间范围内记录和周报素材。不要用它替代开放式语义检索；"
+                "需要从会议原文中找观点、论据、案例时仍优先使用 search_meetings 或 multi_search_meetings。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "record_type": {
+                        "type": "string",
+                        "enum": [
+                            "meetings",
+                            "meeting_detail",
+                            "summaries",
+                            "action_items",
+                            "decisions",
+                            "risks",
+                            "chunks",
+                            "topic_history",
+                            "weekly_report",
+                        ],
+                        "description": "要查询的记录类型。",
+                    },
+                    "keyword": {
+                        "type": "string",
+                        "description": "可选关键词，用于标题、摘要、待办、决策、风险或原文片段过滤。",
+                    },
+                    "topic": {
+                        "type": "string",
+                        "description": "record_type=topic_history 时要追踪的主题、项目、客户、产品或问题。",
+                    },
+                    "note_id": {
+                        "type": "string",
+                        "description": "可选会议 ID。meeting_detail 必填；其他类型可用于限定单场会议。",
+                    },
+                    "start": {
+                        "type": "string",
+                        "description": "可选开始时间，格式 YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS。",
+                    },
+                    "end": {
+                        "type": "string",
+                        "description": "可选结束时间，格式 YYYY-MM-DD 或 YYYY-MM-DD HH:MM:SS。",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "返回记录数，默认 10，最大 50。",
+                    },
+                    "chunk_limit": {
+                        "type": "integer",
+                        "description": "meeting_detail 中返回原文片段数，默认 5，最大 20。",
+                    },
+                },
+                "required": ["record_type"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "get_action_items",
             "description": (
                 "获取结构化待办事项列表（含负责人、截止日期）。"
@@ -250,6 +310,25 @@ TOOLS = [
 
 # ---------- 工具执行 ----------
 
+_DEPRECATED_STRUCTURED_TOOL_NAMES = {
+    "get_action_items",
+    "get_decisions",
+    "get_risks",
+    "get_meeting_summary",
+    "list_meetings",
+    "get_meeting_detail",
+    "search_by_time_range",
+    "get_topic_history",
+    "generate_weekly_report",
+}
+
+# Only expose the unified structured database tool to the LLM. The old helper
+# functions stay below as internal implementations reused by query_meeting_records.
+TOOLS = [
+    tool for tool in TOOLS
+    if tool.get("function", {}).get("name") not in _DEPRECATED_STRUCTURED_TOOL_NAMES
+]
+
 TOOLS[0]["function"]["description"] += (
     " 本工具只用于简单、明确、单点查询；复杂主题、跨会议总结、论据/案例归纳、"
     "口语化或语义模糊问题应优先使用 multi_search_meetings。"
@@ -279,47 +358,8 @@ def execute_tool_structured(name: str, arguments: dict, user_id: Optional[str]) 
             user_id,
             arguments.get("top_k", 8),
         )
-    if name == "get_action_items":
-        return _tool_get_action_items_structured(user_id, arguments.get("keyword"))
-    if name == "get_decisions":
-        return _tool_get_decisions_structured(user_id, arguments.get("keyword"))
-    if name == "get_risks":
-        return _tool_get_risks_structured(user_id, arguments.get("keyword"))
-    if name == "get_meeting_summary":
-        text = _tool_get_meeting_summary(arguments.get("note_id", ""), user_id)
-        return ToolResult(ok=True, tool=name, text_for_llm=text)
-    if name == "list_meetings":
-        return _tool_list_meetings_structured(user_id, arguments.get("limit", 10))
-    if name == "get_meeting_detail":
-        text = _tool_get_meeting_detail(
-            arguments.get("note_id", ""),
-            user_id,
-            arguments.get("chunk_limit", 5),
-        )
-        return ToolResult(ok=True, tool=name, text_for_llm=text)
-    if name == "search_by_time_range":
-        text = _tool_search_by_time_range(
-            user_id=user_id,
-            query=arguments.get("query", ""),
-            start=arguments.get("start"),
-            end=arguments.get("end"),
-            limit=arguments.get("limit", 10),
-        )
-        return ToolResult(ok=True, tool=name, text_for_llm=text)
-    if name == "get_topic_history":
-        text = _tool_get_topic_history(
-            user_id=user_id,
-            topic=arguments.get("topic", ""),
-            limit=arguments.get("limit", 10),
-        )
-        return ToolResult(ok=True, tool=name, text_for_llm=text)
-    if name == "generate_weekly_report":
-        text = _tool_generate_weekly_report(
-            user_id=user_id,
-            start=arguments.get("start"),
-            end=arguments.get("end"),
-        )
-        return ToolResult(ok=True, tool=name, text_for_llm=text)
+    if name == "query_meeting_records":
+        return _tool_query_meeting_records_structured(arguments, user_id)
     if name == "web_search":
         text = _tool_web_search(
             query=arguments.get("query", ""),
@@ -367,6 +407,412 @@ def _source_from_row(source_id: str, row: dict, quote: str = "", score=None) -> 
         speaker=row.get("speaker") or "",
         quote=(quote or row.get("text") or row.get("content") or "")[:500],
         score=score,
+    )
+
+
+def _add_common_meeting_filters(
+    where: list[str],
+    params: list,
+    *,
+    user_id: Optional[str],
+    note_id: Optional[str],
+    start: Optional[str],
+    end: Optional[str],
+    meeting_alias: str = "m",
+) -> None:
+    if user_id:
+        where.append(f"{meeting_alias}.user_id = ?")
+        params.append(user_id)
+    if note_id:
+        where.append(f"{meeting_alias}.note_id = ?")
+        params.append(note_id)
+    where.extend(_date_filter_sql(meeting_alias, start, end, params))
+
+
+def _rows_to_structured_result(
+    *,
+    tool: str,
+    title: str,
+    rows: list[dict],
+    fields: list[tuple[str, str]],
+    quote_field: str,
+) -> ToolResult:
+    if not rows:
+        return ToolResult(ok=True, tool=tool, text_for_llm=f"{title}\n（无记录）", data=[], sources=[])
+
+    lines = [f"{title}：共 {len(rows)} 条"]
+    sources: list[Source] = []
+    for index, row in enumerate(rows, 1):
+        source_id = f"S{index}"
+        parts = []
+        for label, key in fields:
+            value = row.get(key)
+            if value not in (None, ""):
+                parts.append(f"{label}: {value}")
+        if row.get("title") or row.get("create_time"):
+            parts.append(f"来源: 《{row.get('title') or '未命名会议'}》{str(row.get('create_time') or '')[:10]}")
+        lines.append(f"[{source_id}] " + " | ".join(parts))
+        sources.append(_source_from_row(source_id, row, quote=str(row.get(quote_field) or "")))
+
+    return ToolResult(
+        ok=True,
+        tool=tool,
+        text_for_llm="\n".join(lines),
+        data=rows,
+        sources=sources,
+    )
+
+
+def _query_structured_items(
+    *,
+    table: str,
+    alias: str,
+    title: str,
+    user_id: Optional[str],
+    keyword: str,
+    note_id: str,
+    start: Optional[str],
+    end: Optional[str],
+    limit: int,
+    fields: list[tuple[str, str]],
+) -> ToolResult:
+    conn = get_connection()
+    params: list = []
+    where: list[str] = []
+    _add_common_meeting_filters(
+        where,
+        params,
+        user_id=user_id,
+        note_id=note_id or None,
+        start=start,
+        end=end,
+    )
+    if keyword:
+        where.append(f"{alias}.content LIKE ?")
+        params.append(f"%{keyword}%")
+    where_sql = " WHERE " + " AND ".join(where) if where else ""
+    params.append(limit)
+    rows = [
+        dict(row)
+        for row in conn.execute(
+            f"""
+            SELECT
+              {alias}.*,
+              m.title,
+              m.create_time,
+              m.user_id
+            FROM {table} {alias}
+            JOIN meetings m ON m.note_id = {alias}.note_id
+            {where_sql}
+            ORDER BY m.create_time DESC, {alias}.id DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    ]
+    conn.close()
+    return _rows_to_structured_result(
+        tool="query_meeting_records",
+        title=title,
+        rows=rows,
+        fields=fields,
+        quote_field="content",
+    )
+
+
+def _query_meetings_records(
+    *,
+    user_id: Optional[str],
+    keyword: str,
+    note_id: str,
+    start: Optional[str],
+    end: Optional[str],
+    limit: int,
+) -> ToolResult:
+    conn = get_connection()
+    params: list = []
+    where: list[str] = []
+    _add_common_meeting_filters(
+        where,
+        params,
+        user_id=user_id,
+        note_id=note_id or None,
+        start=start,
+        end=end,
+    )
+    if keyword:
+        where.append("m.title LIKE ?")
+        params.append(f"%{keyword}%")
+    where_sql = " WHERE " + " AND ".join(where) if where else ""
+    params.append(limit)
+    rows = [
+        dict(row)
+        for row in conn.execute(
+            f"""
+            SELECT
+              m.note_id,
+              m.user_id,
+              m.title,
+              m.create_time,
+              m.duration_minutes,
+              m.language,
+              COUNT(c.chunk_id) AS chunks,
+              CASE WHEN s.note_id IS NULL THEN 0 ELSE 1 END AS extracted
+            FROM meetings m
+            LEFT JOIN chunks c ON c.note_id = m.note_id
+            LEFT JOIN meeting_summaries s ON s.note_id = m.note_id
+            {where_sql}
+            GROUP BY m.note_id
+            ORDER BY m.create_time DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    ]
+    conn.close()
+    return _rows_to_structured_result(
+        tool="query_meeting_records",
+        title="会议列表",
+        rows=rows,
+        fields=[
+            ("会议", "title"),
+            ("时间", "create_time"),
+            ("时长分钟", "duration_minutes"),
+            ("chunks", "chunks"),
+            ("已结构化", "extracted"),
+        ],
+        quote_field="title",
+    )
+
+
+def _query_summary_records(
+    *,
+    user_id: Optional[str],
+    keyword: str,
+    note_id: str,
+    start: Optional[str],
+    end: Optional[str],
+    limit: int,
+) -> ToolResult:
+    conn = get_connection()
+    params: list = []
+    where: list[str] = []
+    _add_common_meeting_filters(
+        where,
+        params,
+        user_id=user_id,
+        note_id=note_id or None,
+        start=start,
+        end=end,
+    )
+    if keyword:
+        like = f"%{keyword}%"
+        where.append("(m.title LIKE ? OR ms.summary LIKE ? OR ms.topics LIKE ? OR ms.key_points LIKE ?)")
+        params.extend([like, like, like, like])
+    where_sql = " WHERE " + " AND ".join(where) if where else ""
+    params.append(limit)
+    rows = [
+        dict(row)
+        for row in conn.execute(
+            f"""
+            SELECT
+              ms.note_id,
+              ms.summary,
+              ms.topics,
+              ms.key_points,
+              m.title,
+              m.create_time,
+              m.user_id
+            FROM meeting_summaries ms
+            JOIN meetings m ON m.note_id = ms.note_id
+            {where_sql}
+            ORDER BY m.create_time DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    ]
+    conn.close()
+    return _rows_to_structured_result(
+        tool="query_meeting_records",
+        title="会议摘要",
+        rows=rows,
+        fields=[("摘要", "summary"), ("主题", "topics"), ("要点", "key_points")],
+        quote_field="summary",
+    )
+
+
+def _query_chunk_records(
+    *,
+    user_id: Optional[str],
+    keyword: str,
+    note_id: str,
+    start: Optional[str],
+    end: Optional[str],
+    limit: int,
+) -> ToolResult:
+    conn = get_connection()
+    params: list = []
+    where: list[str] = []
+    _add_common_meeting_filters(
+        where,
+        params,
+        user_id=user_id,
+        note_id=note_id or None,
+        start=start,
+        end=end,
+    )
+    if keyword:
+        like = f"%{keyword}%"
+        where.append("(m.title LIKE ? OR c.text LIKE ?)")
+        params.extend([like, like])
+    where_sql = " WHERE " + " AND ".join(where) if where else ""
+    params.append(limit)
+    rows = [
+        dict(row)
+        for row in conn.execute(
+            f"""
+            SELECT
+              c.chunk_id,
+              c.note_id,
+              c.user_id,
+              c.chunk_index,
+              c.speaker,
+              c.text,
+              m.title,
+              m.create_time
+            FROM chunks c
+            JOIN meetings m ON m.note_id = c.note_id
+            {where_sql}
+            ORDER BY m.create_time DESC, c.chunk_index ASC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    ]
+    conn.close()
+    return _rows_to_structured_result(
+        tool="query_meeting_records",
+        title="会议原文片段",
+        rows=rows,
+        fields=[("chunk", "chunk_index"), ("发言人", "speaker"), ("文本", "text")],
+        quote_field="text",
+    )
+
+
+def _tool_query_meeting_records_structured(arguments: dict, user_id: Optional[str]) -> ToolResult:
+    record_type = str(arguments.get("record_type") or "").strip()
+    keyword = str(arguments.get("keyword") or "").strip()
+    topic = str(arguments.get("topic") or "").strip()
+    note_id = str(arguments.get("note_id") or "").strip()
+    start = arguments.get("start") or None
+    end = arguments.get("end") or None
+    limit = _safe_limit(arguments.get("limit", 10), 10, 50)
+
+    if record_type == "meeting_detail":
+        if not note_id:
+            return ToolResult(
+                ok=False,
+                tool="query_meeting_records",
+                text_for_llm="meeting_detail 查询需要提供 note_id。可以先用 record_type=meetings 查询会议列表。",
+                error="missing note_id",
+            )
+        text = _tool_get_meeting_detail(note_id, user_id, arguments.get("chunk_limit", 5))
+        return ToolResult(ok=True, tool="query_meeting_records", text_for_llm=text)
+
+    if record_type == "weekly_report":
+        text = _tool_generate_weekly_report(user_id=user_id, start=start, end=end)
+        return ToolResult(ok=True, tool="query_meeting_records", text_for_llm=text)
+
+    if record_type == "topic_history":
+        topic_value = topic or keyword
+        if not topic_value:
+            return ToolResult(
+                ok=False,
+                tool="query_meeting_records",
+                text_for_llm="topic_history 查询需要提供 topic 或 keyword。",
+                error="missing topic",
+            )
+        text = _tool_get_topic_history(user_id=user_id, topic=topic_value, limit=limit)
+        return ToolResult(ok=True, tool="query_meeting_records", text_for_llm=text)
+
+    if record_type == "meetings":
+        return _query_meetings_records(
+            user_id=user_id,
+            keyword=keyword,
+            note_id=note_id,
+            start=start,
+            end=end,
+            limit=limit,
+        )
+
+    if record_type == "summaries":
+        return _query_summary_records(
+            user_id=user_id,
+            keyword=keyword,
+            note_id=note_id,
+            start=start,
+            end=end,
+            limit=limit,
+        )
+
+    if record_type == "action_items":
+        return _query_structured_items(
+            table="action_items",
+            alias="ai",
+            title="待办事项",
+            user_id=user_id,
+            keyword=keyword,
+            note_id=note_id,
+            start=start,
+            end=end,
+            limit=limit,
+            fields=[("待办", "content"), ("负责人", "owner"), ("截止", "due")],
+        )
+
+    if record_type == "decisions":
+        return _query_structured_items(
+            table="decisions",
+            alias="d",
+            title="决策记录",
+            user_id=user_id,
+            keyword=keyword,
+            note_id=note_id,
+            start=start,
+            end=end,
+            limit=limit,
+            fields=[("决策", "content")],
+        )
+
+    if record_type == "risks":
+        return _query_structured_items(
+            table="risks",
+            alias="r",
+            title="风险记录",
+            user_id=user_id,
+            keyword=keyword,
+            note_id=note_id,
+            start=start,
+            end=end,
+            limit=limit,
+            fields=[("风险", "content")],
+        )
+
+    if record_type == "chunks":
+        return _query_chunk_records(
+            user_id=user_id,
+            keyword=keyword,
+            note_id=note_id,
+            start=start,
+            end=end,
+            limit=limit,
+        )
+
+    return ToolResult(
+        ok=False,
+        tool="query_meeting_records",
+        text_for_llm=f"未知 record_type: {record_type}",
+        error=f"unknown record_type: {record_type}",
     )
 
 

@@ -132,41 +132,9 @@ const TOOL_META = {
     title: '多角度检索会议原文',
     description: '用多个语义 query 融合召回相关讨论',
   },
-  get_action_items: {
-    title: '整理待办事项',
-    description: '读取负责人、截止时间和任务内容',
-  },
-  get_decisions: {
-    title: '提取决策记录',
-    description: '查找会议中已经确定的结论',
-  },
-  get_risks: {
-    title: '排查风险项',
-    description: '汇总会议里提到的问题和阻塞',
-  },
-  get_meeting_summary: {
-    title: '读取会议摘要',
-    description: '获取主题、摘要和核心要点',
-  },
-  list_meetings: {
-    title: '列出相关会议',
-    description: '按时间筛选可参考的会议记录',
-  },
-  get_meeting_detail: {
-    title: '展开会议详情',
-    description: '读取摘要、结构化记忆和原文片段',
-  },
-  search_by_time_range: {
-    title: '按时间范围检索',
-    description: '在指定日期范围内查找会议内容',
-  },
-  get_topic_history: {
-    title: '追踪主题历史',
-    description: '按时间线梳理相关讨论',
-  },
-  generate_weekly_report: {
-    title: '生成周报素材',
-    description: '汇总会议摘要、待办、决策和风险',
+  query_meeting_records: {
+    title: '查询会议记录',
+    description: '读取会议列表、详情、摘要、待办、决策、风险、主题历史或周报素材',
   },
   web_search: {
     title: '联网补充信息',
@@ -221,24 +189,16 @@ function toolArgumentSummary(toolCall) {
       const suffix = queries.length > 3 ? ` 等 ${queries.length} 个查询` : ''
       return text ? `查询：${compactValue(text + suffix)}` : ''
     }
-    case 'get_action_items':
-    case 'get_decisions':
-    case 'get_risks':
-      return compactValue(args.keyword) ? `关键词：${compactValue(args.keyword)}` : ''
-    case 'list_meetings':
-      return args.limit ? `数量：${args.limit}` : ''
-    case 'get_meeting_summary':
-    case 'get_meeting_detail':
-      return compactValue(args.note_id, 36) ? `会议ID：${compactValue(args.note_id, 36)}` : ''
-    case 'search_by_time_range': {
-      const range = [args.start || '最早', args.end || '最新'].join(' 至 ')
-      const query = compactValue(args.query)
-      return query ? `范围：${range}；查询：${query}` : `范围：${range}`
+    case 'query_meeting_records': {
+      const parts = []
+      if (args.record_type) parts.push(`类型：${args.record_type}`)
+      if (args.keyword) parts.push(`关键词：${compactValue(args.keyword)}`)
+      if (args.topic) parts.push(`主题：${compactValue(args.topic)}`)
+      if (args.note_id) parts.push(`会议ID：${compactValue(args.note_id, 36)}`)
+      if (args.start || args.end) parts.push(`范围：${args.start || '最早'} 至 ${args.end || '最新'}`)
+      if (args.limit) parts.push(`数量：${args.limit}`)
+      return parts.join('；')
     }
-    case 'get_topic_history':
-      return compactValue(args.topic) ? `主题：${compactValue(args.topic)}` : ''
-    case 'generate_weekly_report':
-      return `范围：${args.start || '最早'} 至 ${args.end || '最新'}`
     default:
       return ''
   }

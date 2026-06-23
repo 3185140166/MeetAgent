@@ -31,7 +31,7 @@ def _json(value) -> str:
 def _task_plan(question: str, topic: str, task_type: str) -> tuple[str, list[dict]]:
     if task_type == "weekly_report":
         plan = [
-            {"title": "生成周报素材", "tool_name": "generate_weekly_report", "tool_args": {}},
+            {"title": "生成周报素材", "tool_name": "query_meeting_records", "tool_args": {"record_type": "weekly_report"}},
             {"title": "生成周报结论", "tool_name": "synthesize", "tool_args": {"question": question}},
         ]
     elif task_type == "memory_build":
@@ -41,10 +41,10 @@ def _task_plan(question: str, topic: str, task_type: str) -> tuple[str, list[dic
         ]
     else:
         plan = [
-            {"title": "追踪主题历史", "tool_name": "get_topic_history", "tool_args": {"topic": topic, "limit": 20}},
-            {"title": "汇总相关决策", "tool_name": "get_decisions", "tool_args": {"keyword": topic}},
-            {"title": "汇总相关风险", "tool_name": "get_risks", "tool_args": {"keyword": topic}},
-            {"title": "汇总相关待办", "tool_name": "get_action_items", "tool_args": {"keyword": topic}},
+            {"title": "追踪主题历史", "tool_name": "query_meeting_records", "tool_args": {"record_type": "topic_history", "topic": topic, "limit": 20}},
+            {"title": "汇总相关决策", "tool_name": "query_meeting_records", "tool_args": {"record_type": "decisions", "keyword": topic}},
+            {"title": "汇总相关风险", "tool_name": "query_meeting_records", "tool_args": {"record_type": "risks", "keyword": topic}},
+            {"title": "汇总相关待办", "tool_name": "query_meeting_records", "tool_args": {"record_type": "action_items", "keyword": topic}},
             {"title": "生成综合分析", "tool_name": "synthesize", "tool_args": {"question": question}},
         ]
     return _json(plan), plan
