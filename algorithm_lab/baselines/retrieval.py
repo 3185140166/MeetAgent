@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Sequence
 
 RRF_K = 60
 
@@ -48,23 +48,54 @@ def _rrf_merge(query_hits: list[tuple[str, list[dict]]], top_k: int) -> list[dic
     return merged
 
 
-def bm25(query: str, user_id: str | None = None, top_k: int = 8) -> list[dict]:
+UserFilter = str | Sequence[str] | None
+
+
+def _user_filter_kwargs(user_filter: UserFilter) -> dict:
+    if user_filter is None or isinstance(user_filter, str):
+        return {"user_id": user_filter}
+    return {"user_ids": list(user_filter)}
+
+
+def bm25(query: str, user_id: UserFilter = None, top_k: int = 8) -> list[dict]:
     from app.search.bm25 import search as bm25_search
 
-    return _dedupe_hits(bm25_search(query, user_id=user_id, top_k=top_k))
+    return _dedupe_hits(bm25_search(query, top_k=top_k, **_user_filter_kwargs(user_id)))
 
 
-def hybrid_rrf(query: str, user_id: str | None = None, top_k: int = 8) -> list[dict]:
+def llm_sparse_bm25(query: str, user_id: UserFilter = None, top_k: int = 8) -> list[dict]:
+    from app.search.bm25 import search_match_query as bm25_search_match_query
+    from app.search.sparse_query import build_llm_sparse_match_query
+
+    match_query, sparse_terms = build_llm_sparse_match_query(query)
+    if not match_query:
+        return bm25(query, user_id=user_id, top_k=top_k)
+    hits = bm25_search_match_query(match_query, top_k=top_k, **_user_filter_kwargs(user_id))
+    for hit in hits:
+        hit["sparse_query"] = match_query
+        hit["sparse_terms"] = sparse_terms
+    return _dedupe_hits(hits)
+
+
+def dense(query: str, user_id: UserFilter = None, top_k: int = 8) -> list[dict]:
+    from app.embed.encoder import embed_one
+    from app.embed.vector_store import search as vector_search
+
+    query_vec = embed_one(query)
+    return _dedupe_hits(vector_search(query_vec, top_k=top_k, **_user_filter_kwargs(user_id)))
+
+
+def hybrid_rrf(query: str, user_id: UserFilter = None, top_k: int = 8) -> list[dict]:
     from app.search.hybrid import search as hybrid_search
 
-    return _dedupe_hits(hybrid_search(query, user_id=user_id, top_k=top_k))
+    return _dedupe_hits(hybrid_search(query, top_k=top_k, **_user_filter_kwargs(user_id)))
 
 
 def multi_query(
     queries: list[str],
-    user_id: str | None,
+    user_id: UserFilter,
     top_k: int,
-    search_fn: Callable[[str, str | None, int], list[dict]],
+    search_fn: Callable[[str, UserFilter, int], list[dict]],
 ) -> list[dict]:
     clean_queries: list[str] = []
     seen: set[str] = set()
@@ -82,17 +113,24 @@ def multi_query(
     return _rrf_merge(query_hits, top_k=top_k)
 
 
-def multi_query_bm25(queries: list[str], user_id: str | None = None, top_k: int = 8) -> list[dict]:
+def multi_query_bm25(queries: list[str], user_id: UserFilter = None, top_k: int = 8) -> list[dict]:
     return multi_query(queries, user_id=user_id, top_k=top_k, search_fn=bm25)
 
 
-def multi_query_hybrid(queries: list[str], user_id: str | None = None, top_k: int = 8) -> list[dict]:
+def multi_query_llm_sparse_bm25(queries: list[str], user_id: UserFilter = None, top_k: int = 8) -> list[dict]:
+    return multi_query(queries, user_id=user_id, top_k=top_k, search_fn=llm_sparse_bm25)
+
+
+def multi_query_hybrid(queries: list[str], user_id: UserFilter = None, top_k: int = 8) -> list[dict]:
     return multi_query(queries, user_id=user_id, top_k=top_k, search_fn=hybrid_rrf)
 
 
 BASELINES = {
     "bm25": bm25,
+    "llm_sparse_bm25": llm_sparse_bm25,
+    "dense": dense,
     "hybrid_rrf": hybrid_rrf,
     "multi_query_bm25": multi_query_bm25,
+    "multi_query_llm_sparse_bm25": multi_query_llm_sparse_bm25,
     "multi_query_hybrid": multi_query_hybrid,
 }

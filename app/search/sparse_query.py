@@ -95,14 +95,22 @@ def extract_sparse_terms(query: str, max_terms: int = LLM_SPARSE_QUERY_MAX_TERMS
 
 def build_fts_or_query(terms: list[str]) -> str:
     """Build a conservative OR query for SQLite FTS5 MATCH."""
-    parts = []
+    from app.search.bm25 import _build_or_match_query, _tokenize_terms
+
+    expanded_terms: list[str] = []
+    seen: set[str] = set()
     for term in terms:
         term = str(term or "").strip()
         if not term:
             continue
-        escaped = term.replace('"', '""')
-        parts.append(f'"{escaped}"')
-    return " OR ".join(parts)
+        tokenized = _tokenize_terms(term) or [term]
+        for token in tokenized:
+            token = str(token or "").strip()
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            expanded_terms.append(token)
+    return _build_or_match_query(expanded_terms)
 
 
 def build_llm_sparse_match_query(query: str) -> tuple[str, list[str]]:

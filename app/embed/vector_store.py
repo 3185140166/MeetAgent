@@ -6,7 +6,7 @@ Collection：meet_chunks
 文档 ID：chunk_id（与 SQLite chunks 表对应）
 Metadata：chunk_id, note_id, user_id（用于过滤）
 """
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Sequence
 import os
 import chromadb
 from app.config import DB_PATH
@@ -61,11 +61,20 @@ def upsert_batch(
 def search(
     query_embedding: List[float],
     user_id: Optional[str] = None,
+    user_ids: Optional[Sequence[str]] = None,
     top_k: int = 8,
 ) -> List[Dict]:
     """向量相似度检索，返回格式与 BM25 search 一致。"""
     col = _get_collection()
-    where = {"user_id": user_id} if user_id else None
+    clean_user_ids = [str(uid).strip() for uid in (user_ids or []) if str(uid).strip()]
+    if user_id and not clean_user_ids:
+        clean_user_ids = [user_id]
+    if len(clean_user_ids) == 1:
+        where = {"user_id": clean_user_ids[0]}
+    elif clean_user_ids:
+        where = {"user_id": {"$in": clean_user_ids}}
+    else:
+        where = None
     results = col.query(
         query_embeddings=[query_embedding],
         n_results=top_k,

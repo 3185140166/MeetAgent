@@ -30,32 +30,23 @@ def _hit_ids(hits: list[dict], field: str) -> list[str]:
 
 def _rank_of_first_match(hits: list[dict], sample: dict) -> int | None:
     relevant_chunks = _relevant_ids(sample, "relevant_chunk_ids")
-    relevant_notes = _relevant_ids(sample, "relevant_note_ids")
-
-    if not relevant_chunks and not relevant_notes:
+    if not relevant_chunks:
         return None
 
     for rank, hit in enumerate(hits, 1):
         chunk_id = str(hit.get("chunk_id") or "")
-        note_id = str(hit.get("note_id") or "")
-        if chunk_id in relevant_chunks or note_id in relevant_notes:
+        if chunk_id in relevant_chunks:
             return rank
     return None
 
 
 def _recall_at_k(hits: list[dict], sample: dict) -> float:
     relevant_chunks = _relevant_ids(sample, "relevant_chunk_ids")
-    relevant_notes = _relevant_ids(sample, "relevant_note_ids")
+    if not relevant_chunks:
+        return 0.0
 
-    if relevant_chunks:
-        retrieved = set(_hit_ids(hits, "chunk_id"))
-        return len(relevant_chunks & retrieved) / len(relevant_chunks)
-
-    if relevant_notes:
-        retrieved = set(_hit_ids(hits, "note_id"))
-        return len(relevant_notes & retrieved) / len(relevant_notes)
-
-    return 0.0
+    retrieved = set(_hit_ids(hits, "chunk_id"))
+    return len(relevant_chunks & retrieved) / len(relevant_chunks)
 
 
 def _keyword_hit_rate(hits: list[dict], sample: dict) -> float:
@@ -73,9 +64,7 @@ def _keyword_hit_rate(hits: list[dict], sample: dict) -> float:
 
 def evaluate_retrieval(hits: list[dict], sample: dict) -> RetrievalMetrics:
     first_hit_rank = _rank_of_first_match(hits, sample)
-    has_explicit_labels = bool(
-        sample.get("relevant_chunk_ids") or sample.get("relevant_note_ids")
-    )
+    has_explicit_labels = bool(sample.get("relevant_chunk_ids"))
     keyword_hit_rate = _keyword_hit_rate(hits, sample)
 
     if has_explicit_labels:

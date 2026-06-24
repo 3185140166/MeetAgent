@@ -54,5 +54,4 @@ docs/
 CURRENT_PROJECT_STATE.md
 
 # Local retrieval dataset review artifacts
-algorithm_lab/datasets/*draft*.jsonl
-algorithm_lab/datasets/*review_work*.jsonl
+algorithm_lab/datasets/data/

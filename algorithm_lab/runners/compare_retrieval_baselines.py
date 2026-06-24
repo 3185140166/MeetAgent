@@ -25,11 +25,23 @@ def main() -> None:
         choices=sorted(BASELINES),
     )
     parser.add_argument("--top-k", type=int, default=8)
+    parser.add_argument(
+        "--user-scope",
+        choices=["sample", "dataset", "all"],
+        default="dataset",
+        help=(
+            "Candidate chunk scope: sample=only sample.user_id; "
+            "dataset=all user_ids present in the dataset; all=no user filter."
+        ),
+    )
     parser.add_argument("--output", default="", help="Optional JSON report path")
     args = parser.parse_args()
 
     dataset = load_jsonl(Path(args.dataset))
-    reports = [run_eval(dataset, baseline=baseline, top_k=args.top_k) for baseline in args.baselines]
+    reports = [
+        run_eval(dataset, baseline=baseline, top_k=args.top_k, user_scope=args.user_scope)
+        for baseline in args.baselines
+    ]
 
     rows = []
     for report in reports:
@@ -58,7 +70,16 @@ def main() -> None:
         output_path = Path(args.output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(
-            json.dumps({"top_k": args.top_k, "rows": rows, "reports": reports}, ensure_ascii=False, indent=2),
+            json.dumps(
+                {
+                    "top_k": args.top_k,
+                    "user_scope": args.user_scope,
+                    "rows": rows,
+                    "reports": reports,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
             encoding="utf-8",
         )
 

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
 import jieba
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Sequence
 
 from app.storage.db import get_connection
 from app.config import TOP_K
@@ -22,15 +22,31 @@ def _load_stopwords() -> set:
     return _stopwords
 
 
-def _tokenize(text: str) -> str:
+def _tokenize_terms(text: str) -> List[str]:
     stopwords = _load_stopwords()
-    tokens = [t for t in jieba.cut(text) if t.strip() and t not in stopwords]
-    return " ".join(tokens)
+    return [t for t in jieba.cut(text) if t.strip() and t not in stopwords]
+
+
+def _tokenize(text: str) -> str:
+    """Return space-joined tokens for diagnostics and backward-compatible callers."""
+    return " ".join(_tokenize_terms(text))
+
+
+def _build_or_match_query(terms: Sequence[str]) -> str:
+    parts = []
+    for term in terms:
+        term = str(term or "").strip()
+        if not term:
+            continue
+        escaped = term.replace('"', '""')
+        parts.append(f'"{escaped}"')
+    return " OR ".join(parts)
 
 
 def _search_match(
     match_query: str,
     user_id: Optional[str] = None,
+    user_ids: Optional[Sequence[str]] = None,
     top_k: int = TOP_K,
 ) -> List[Dict]:
     match_query = (match_query or "").strip()
@@ -40,10 +56,15 @@ def _search_match(
     conn = get_connection()
     params: list = [match_query]
 
+    clean_user_ids = [str(uid).strip() for uid in (user_ids or []) if str(uid).strip()]
+    if user_id and not clean_user_ids:
+        clean_user_ids = [user_id]
+
     user_filter = ""
-    if user_id:
-        user_filter = "AND f.user_id = ?"
-        params.append(user_id)
+    if clean_user_ids:
+        placeholders = ", ".join("?" for _ in clean_user_ids)
+        user_filter = f"AND f.user_id IN ({placeholders})"
+        params.extend(clean_user_ids)
 
     params.append(top_k)
 
@@ -75,16 +96,18 @@ def _search_match(
 def search_match_query(
     match_query: str,
     user_id: Optional[str] = None,
+    user_ids: Optional[Sequence[str]] = None,
     top_k: int = TOP_K,
 ) -> List[Dict]:
     """Search with a prebuilt SQLite FTS5 MATCH query."""
-    return _search_match(match_query, user_id=user_id, top_k=top_k)
+    return _search_match(match_query, user_id=user_id, user_ids=user_ids, top_k=top_k)
 
 
 def search(
     query: str,
     user_id: Optional[str] = None,
+    user_ids: Optional[Sequence[str]] = None,
     top_k: int = TOP_K,
 ) -> List[Dict]:
-    query_tokens = _tokenize(query)
-    return _search_match(query_tokens, user_id=user_id, top_k=top_k)
+    match_query = _build_or_match_query(_tokenize_terms(query))
+    return _search_match(match_query, user_id=user_id, user_ids=user_ids, top_k=top_k)

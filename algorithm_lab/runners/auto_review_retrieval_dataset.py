@@ -2,8 +2,9 @@
 """Auto-review and repair LLM-generated retrieval evaluation samples.
 
 The reviewer checks whether each question is directly answerable from its
-labelled source chunk. Good samples are accepted. Weak samples are rewritten
-against the same chunk when possible. Unsupported samples are rejected.
+labelled source chunk or source chunks. Good samples are accepted. Weak samples
+are rewritten against the same evidence when possible. Unsupported samples are
+rejected.
 
 Usage:
     python -m algorithm_lab.runners.auto_review_retrieval_dataset \
@@ -115,7 +116,36 @@ async def chat_json(
     return extract_json(data["choices"][0]["message"]["content"])
 
 
-def build_review_messages(row: dict[str, Any]) -> list[dict[str, str]]:
+def is_multi_evidence_row(row: dict[str, Any]) -> bool:
+    source = row.get("source") or {}
+    return (
+        row.get("label_type") == "llm_multi_evidence_question"
+        or bool(source.get("chunks"))
+        or str(row.get("difficulty") or "") == "multi_evidence"
+    )
+
+
+def build_multi_evidence_text(source: dict[str, Any]) -> str:
+    chunks = source.get("chunks") or []
+    if not chunks:
+        return str(source.get("text_preview") or "")[:5000]
+
+    parts: list[str] = []
+    for index, chunk in enumerate(chunks, 1):
+        parts.append(
+            "\n".join(
+                [
+                    f"[Chunk {index}]",
+                    f"chunk_id: {chunk.get('chunk_id') or ''}",
+                    f"chunk_index: {chunk.get('chunk_index') or ''}",
+                    str(chunk.get("text_preview") or ""),
+                ]
+            )
+        )
+    return "\n\n".join(parts)[:7000]
+
+
+def build_single_review_messages(row: dict[str, Any]) -> list[dict[str, str]]:
     source = row.get("source") or {}
     text = str(source.get("text_preview") or "")[:2200]
     keywords = row.get("relevant_keywords") or []
@@ -156,6 +186,60 @@ def build_review_messages(row: dict[str, Any]) -> list[dict[str, str]]:
             ),
         },
     ]
+
+
+def build_multi_review_messages(row: dict[str, Any]) -> list[dict[str, str]]:
+    source = row.get("source") or {}
+    keywords = row.get("relevant_keywords") or []
+    requirements = source.get("evidence_requirements") or []
+    chunks_text = build_multi_evidence_text(source)
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是严格的会议检索评测集审核员。现在审核的是 multi-evidence 样本："
+                "一个问题必须由同一会议中的多个标注 chunk 共同支持。\n"
+                "只输出 JSON，不要输出 markdown。\n"
+                "判定标准：\n"
+                "1. accept：问题自然、完整，并且至少需要 2 个标注 chunk 的信息才能完整回答；"
+                "每个标注 chunk 都提供了不可缺少的证据。\n"
+                "2. revise：问题相关但表达不自然、过宽、关键词不合适，或没有清楚地要求综合多个 chunk；"
+                "但可以基于这些标注 chunk 改写成一个必须综合多个 chunk 的有效问题。\n"
+                "3. reject：问题只靠单个 chunk 就能回答、需要 chunk 外信息、证据之间没有可综合关系，"
+                "或无法改写成有价值的多证据检索问题。\n"
+                "如果 revise，必须给出 revised_question 和 revised_keywords。\n"
+                "revised_question 不要暴露 note_id/chunk_id，不要照抄原文，必须像真实用户问题，"
+                "并明确需要综合、对比、归纳或串联多个片段。\n"
+                "keywords 给 3 到 8 个适合 BM25 的中文实体、主题、术语或短语。\n"
+                "输出格式："
+                "{\"status\":\"accept|revise|reject\","
+                "\"confidence\":0.0,"
+                "\"reason\":\"简短原因\","
+                "\"evidence_summary\":\"说明哪些 chunk 分别支持了什么事实，以及为什么需要多 chunk\","
+                "\"revised_question\":\"\","
+                "\"revised_keywords\":[\"关键词\"]}"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"样本ID：{row.get('id')}\n"
+                f"原问题：{row.get('question') or ''}\n"
+                f"原关键词：{json.dumps(keywords, ensure_ascii=False)}\n"
+                f"标注 chunk ids：{json.dumps(row.get('relevant_chunk_ids') or [], ensure_ascii=False)}\n"
+                f"会议标题：{source.get('title') or ''}\n"
+                f"会议时间：{source.get('create_time') or ''}\n"
+                f"生成时的证据要求：{json.dumps(requirements, ensure_ascii=False)}\n"
+                f"标注片段：\n{chunks_text}"
+            ),
+        },
+    ]
+
+
+def build_review_messages(row: dict[str, Any]) -> list[dict[str, str]]:
+    if is_multi_evidence_row(row):
+        return build_multi_review_messages(row)
+    return build_single_review_messages(row)
 
 
 def normalize_review(raw: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:

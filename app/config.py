@@ -24,6 +24,7 @@ EMBED_PROVIDER: str = os.environ.get("EMBED_PROVIDER", "local")          # local
 EMBED_LOCAL_MODEL: str = os.environ.get("EMBED_LOCAL_MODEL", "BAAI/bge-small-zh-v1.5")
 EMBED_MODEL_DIR: str = os.environ.get("EMBED_MODEL_DIR", "models")       # 本地模型缓存目录
 EMBED_DIM: int = int(os.environ.get("EMBED_DIM", "512"))
+EMBED_MAX_SEQ_LENGTH: int = int(os.environ.get("EMBED_MAX_SEQ_LENGTH", "512"))
 DASHSCOPE_BASE_URL: str = os.environ.get("DASHSCOPE_BASE_URL", "")
 DASHSCOPE_API_KEY: str = os.environ.get("DASHSCOPE_API_KEY", "")
 DASHSCOPE_EMBEDDING_MODEL: str = os.environ.get("DASHSCOPE_EMBEDDING_MODEL", "text-embedding-v4")
